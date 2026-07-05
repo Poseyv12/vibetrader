@@ -1,0 +1,81 @@
+import { lmChat, pickModel, LmMessage } from "./llm";
+import { CHAT_TOOLS, runChatTool } from "./chat-tools";
+
+export const SYSTEM_PROMPT = `You are the VIBETRADER research copilot — a markets research analyst inside a paper-trading terminal connected to the user's Alpaca PAPER account (not real money).
+
+READ-ONLY tools: the user's account/positions/orders/alerts, plus research tools — quotes, daily bars, computed technicals (SMA/RSI/volatility/52wk levels — trust these numbers, don't recompute), news headlines, top movers, most-active stocks, market clock. You cannot place, modify, or cancel orders — if asked to trade, point the user to the order ticket.
+
+Research workflows:
+- "research <symbol>" → get_quote + get_technicals + get_news(symbol), then synthesize: current picture, trend & momentum read (price vs SMAs, RSI, vol), key levels (52wk high/low, SMAs), recent catalysts from news, and risks. End with a one-line take.
+- "market briefing" / "what's moving" → get_movers + get_most_actives + get_news (general), relate to the user's positions when relevant.
+- Portfolio review → get_positions + get_technicals/get_news on the holdings.
+
+Style: structured markdown with short bold-labeled sections and bullet points; real numbers (2 decimals USD). Never invent data — if a tool returns nothing, say so. Findings are analysis for the user's own decisions, not directives; skip boilerplate disclaimers.`;
+
+export type AgentEvent =
+  | { type: "status"; text: string }
+  | { type: "tool"; name: string; args: Record<string, unknown> };
+
+/** Strip <think>...</think> blocks some local models emit. */
+function stripThink(text: string): string {
+  return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+}
+
+/**
+ * Run the read-only tool loop against LM Studio and return the final answer.
+ * Used by the chat route (with streaming events) and research generation.
+ */
+export async function runAgent(
+  messages: { role: "user" | "assistant"; content: string }[],
+  onEvent?: (e: AgentEvent) => void
+): Promise<string> {
+  const model = await pickModel();
+  onEvent?.({ type: "status", text: `thinking (${model})` });
+
+  const convo: LmMessage[] = [
+    { role: "system", content: SYSTEM_PROMPT },
+    ...messages.slice(-16),
+  ];
+
+  for (let round = 0; round < 10; round++) {
+    const { message } = await lmChat({
+      model,
+      messages: convo,
+      tools: CHAT_TOOLS,
+      temperature: 0.2,
+    });
+
+    if (message.tool_calls?.length) {
+      convo.push(message);
+      for (const call of message.tool_calls) {
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(call.function.arguments || "{}");
+        } catch {}
+        onEvent?.({ type: "tool", name: call.function.name, args });
+        let result: unknown;
+        try {
+          result = await runChatTool(call.function.name, args);
+        } catch (e) {
+          result = { error: e instanceof Error ? e.message : String(e) };
+        }
+        convo.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify(result),
+        });
+      }
+      continue;
+    }
+
+    return stripThink(message.content ?? "");
+  }
+  return "(research ran out of tool rounds without a final answer — try a narrower question)";
+}
+
+export function friendlyLlmError(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /fetch failed|ECONNREFUSED/i.test(msg)
+    ? "LM Studio isn't reachable on localhost:1234 — start its local server (Developer tab → Start Server)."
+    : msg;
+}
