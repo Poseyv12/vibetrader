@@ -48,6 +48,17 @@ export interface Order {
   submitted_at: string;
 }
 
+export interface NewsStory {
+  id: number;
+  headline: string;
+  summary?: string;
+  source: string;
+  url?: string;
+  created_at: string;
+  /** crypto appears slashless here (BTCUSD) — the news API's convention */
+  symbols: string[];
+}
+
 export interface Snapshot {
   latestTrade?: { p: number; t: string };
   latestQuote?: { bp: number; ap: number };

@@ -13,6 +13,7 @@ import { OrdersPanel } from "@/components/OrdersPanel";
 import { AlertsPanel } from "@/components/AlertsPanel";
 import { ChatPanel } from "@/components/ChatPanel";
 import { ResearchPanel } from "@/components/ResearchPanel";
+import { NewsPanel } from "@/components/NewsPanel";
 import { ToastHost } from "@/components/ToastHost";
 
 const DEFAULT_WATCHLIST = [
@@ -31,6 +32,9 @@ const DEFAULT_WATCHLIST = [
 const LS_KEY = "vibetrader.watchlist.v2";
 
 const RESEARCH_H_KEY = "vibetrader.researchHeight";
+const TAB_KEY = "vibetrader.mainTab";
+
+type MainTab = "research" | "news";
 
 export default function Home() {
   const [symbol, setSymbol] = useState("SPY");
@@ -38,6 +42,8 @@ export default function Home() {
   const [hydrated, setHydrated] = useState(false);
   const [researchH, setResearchH] = useState(300);
   const [dragging, setDragging] = useState(false);
+  const [mainTab, setMainTab] = useState<MainTab>("research");
+  const [newsUnread, setNewsUnread] = useState(false);
 
   useEffect(() => {
     try {
@@ -51,8 +57,21 @@ export default function Home() {
     }
     const h = parseInt(localStorage.getItem(RESEARCH_H_KEY) ?? "", 10);
     if (h >= 140) setResearchH(h);
+    if (localStorage.getItem(TAB_KEY) === "news") setMainTab("news");
     setHydrated(true);
   }, []);
+
+  useEffect(() => {
+    if (hydrated) localStorage.setItem(TAB_KEY, mainTab);
+  }, [mainTab, hydrated]);
+
+  // watchdog stories that arrive while the news tab is hidden get a dot
+  useEffect(() => {
+    if (mainTab === "news") return;
+    const onNews = () => setNewsUnread(true);
+    window.addEventListener("vt:news", onNews);
+    return () => window.removeEventListener("vt:news", onNews);
+  }, [mainTab]);
 
   useEffect(() => {
     if (hydrated) localStorage.setItem(RESEARCH_H_KEY, String(researchH));
@@ -126,8 +145,35 @@ export default function Home() {
             onPointerDown={startResize}
             role="separator"
             aria-orientation="horizontal"
-            aria-label="Resize research panel"
+            aria-label="Resize lower panel"
           />
+          <div
+            className="seg"
+            role="tablist"
+            aria-label="Lower panel"
+            style={{ width: 260, flexShrink: 0 }}
+          >
+            <button
+              role="tab"
+              aria-selected={mainTab === "research"}
+              className={mainTab === "research" ? "active" : ""}
+              onClick={() => setMainTab("research")}
+            >
+              ◈ RESEARCH
+            </button>
+            <button
+              role="tab"
+              aria-selected={mainTab === "news"}
+              className={mainTab === "news" ? "active" : ""}
+              onClick={() => {
+                setMainTab("news");
+                setNewsUnread(false);
+              }}
+            >
+              ◈ NEWS
+              {newsUnread && <span style={{ color: "var(--amber)" }}> ●</span>}
+            </button>
+          </div>
           <div
             className="reveal"
             style={{
@@ -138,7 +184,28 @@ export default function Home() {
               flexShrink: 0,
             }}
           >
-            <ResearchPanel />
+            {/* both stay mounted — keeps research search/open state and the
+                live news buffer while the other tab is showing */}
+            <div
+              style={{
+                display: mainTab === "research" ? "flex" : "none",
+                flexDirection: "column",
+                flex: 1,
+                minHeight: 0,
+              }}
+            >
+              <ResearchPanel />
+            </div>
+            <div
+              style={{
+                display: mainTab === "news" ? "flex" : "none",
+                flexDirection: "column",
+                flex: 1,
+                minHeight: 0,
+              }}
+            >
+              <NewsPanel symbol={symbol} />
+            </div>
           </div>
           <div className="split reveal" style={{ animationDelay: "160ms" }}>
             <PositionsTable onSelect={setSymbol} />
