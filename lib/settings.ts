@@ -8,9 +8,21 @@ import { UiTheme, DEFAULT_THEME } from "./theme-shared";
  * file changes nothing.
  */
 
+export type LlmProvider = "lmstudio" | "openai" | "anthropic";
+
 export interface Settings {
   alpaca: { apiKey?: string; secretKey?: string };
-  llm: { url?: string; model?: string; embedModel?: string };
+  llm: {
+    /** which backend answers chat/agent calls — embeddings always use LM Studio */
+    provider?: LlmProvider;
+    url?: string;
+    model?: string;
+    embedModel?: string;
+    openaiApiKey?: string;
+    openaiModel?: string;
+    anthropicApiKey?: string;
+    anthropicModel?: string;
+  };
   watchdog: { enabled: boolean; minImpact: "low" | "medium" | "high" };
   ui: UiTheme;
 }
@@ -63,6 +75,10 @@ export function updateSettings(patch: {
 export const resolved = {
   alpacaKey: () => getSettings().alpaca.apiKey || process.env.ALPACA_API_KEY || "",
   alpacaSecret: () => getSettings().alpaca.secretKey || process.env.ALPACA_SECRET_KEY || "",
+  llmProvider: (): LlmProvider =>
+    getSettings().llm.provider ||
+    (process.env.LLM_PROVIDER as LlmProvider) ||
+    "lmstudio",
   llmUrl: () =>
     getSettings().llm.url || process.env.LMSTUDIO_URL || "http://localhost:1234/v1",
   llmModel: () => getSettings().llm.model || process.env.LMSTUDIO_MODEL || "",
@@ -70,6 +86,12 @@ export const resolved = {
     getSettings().llm.embedModel ||
     process.env.LMSTUDIO_EMBED_MODEL ||
     "text-embedding-nomic-embed-text-v1.5",
+  openaiKey: () => getSettings().llm.openaiApiKey || process.env.OPENAI_API_KEY || "",
+  openaiModel: () => getSettings().llm.openaiModel || process.env.OPENAI_MODEL || "gpt-5",
+  anthropicKey: () =>
+    getSettings().llm.anthropicApiKey || process.env.ANTHROPIC_API_KEY || "",
+  anthropicModel: () =>
+    getSettings().llm.anthropicModel || process.env.ANTHROPIC_MODEL || "claude-opus-4-8",
 };
 
 const mask = (v?: string) => (v && v.length > 4 ? `••••${v.slice(-4)}` : v ? "••••" : "");
@@ -84,9 +106,14 @@ export function publicSettings() {
       fromEnv: !s.alpaca.apiKey,
     },
     llm: {
+      provider: resolved.llmProvider(),
       url: resolved.llmUrl(),
       model: resolved.llmModel(),
       embedModel: resolved.embedModel(),
+      openaiApiKey: mask(resolved.openaiKey()),
+      openaiModel: resolved.openaiModel(),
+      anthropicApiKey: mask(resolved.anthropicKey()),
+      anthropicModel: resolved.anthropicModel(),
     },
     watchdog: s.watchdog,
     ui: s.ui,

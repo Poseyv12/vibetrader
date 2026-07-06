@@ -1,5 +1,6 @@
 import { lmChat, pickModel, LmMessage } from "./llm";
 import { CHAT_TOOLS, runChatTool } from "./chat-tools";
+import { resolved } from "./settings";
 
 export const SYSTEM_PROMPT = `You are the VIBETRADER research copilot — a markets research analyst inside a paper-trading terminal connected to the user's Alpaca PAPER account (not real money).
 
@@ -75,7 +76,13 @@ export async function runAgent(
 
 export function friendlyLlmError(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
-  return /fetch failed|ECONNREFUSED/i.test(msg)
-    ? "LM Studio isn't reachable on localhost:1234 — start its local server (Developer tab → Start Server)."
-    : msg;
+  if (/fetch failed|ECONNREFUSED/i.test(msg)) {
+    return resolved.llmProvider() === "lmstudio"
+      ? "LM Studio isn't reachable on localhost:1234 — start its local server (Developer tab → Start Server)."
+      : "couldn't reach the AI provider — check your connection and API key on /settings";
+  }
+  if (/\b401\b|invalid.?api.?key|authentication/i.test(msg)) {
+    return "the AI provider rejected your API key — update it on /settings";
+  }
+  return msg;
 }

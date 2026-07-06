@@ -6,12 +6,29 @@ import { Panel } from "@/components/Panel";
 import { applyTheme } from "@/lib/theme-client";
 import { DEFAULT_THEME, UiTheme } from "@/lib/theme-shared";
 
+type LlmProvider = "lmstudio" | "openai" | "anthropic";
+
 interface PublicSettings {
   alpaca: { apiKey: string; secretKey: string; fromEnv: boolean };
-  llm: { url: string; model: string; embedModel: string };
+  llm: {
+    provider: LlmProvider;
+    url: string;
+    model: string;
+    embedModel: string;
+    openaiApiKey: string;
+    openaiModel: string;
+    anthropicApiKey: string;
+    anthropicModel: string;
+  };
   watchdog: { enabled: boolean; minImpact: "low" | "medium" | "high" };
   ui: UiTheme;
 }
+
+const PROVIDERS: { id: LlmProvider; label: string }[] = [
+  { id: "lmstudio", label: "LM STUDIO" },
+  { id: "openai", label: "OPENAI" },
+  { id: "anthropic", label: "ANTHROPIC" },
+];
 
 const PRESETS: { name: string; ui: UiTheme }[] = [
   { name: "PHOSPHOR", ui: DEFAULT_THEME },
@@ -36,14 +53,25 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState<string | null>(null);
   const [alpacaKey, setAlpacaKey] = useState("");
   const [alpacaSecret, setAlpacaSecret] = useState("");
+  const [openaiKey, setOpenaiKey] = useState("");
+  const [anthropicKey, setAnthropicKey] = useState("");
+
+  const provider = s?.llm.provider ?? "lmstudio";
 
   useEffect(() => {
     fetch("/api/settings").then((r) => r.json()).then(setS);
-    fetch("/api/settings/models")
+  }, []);
+
+  useEffect(() => {
+    if (!s) return;
+    setModels([]);
+    fetch(`/api/settings/models?provider=${provider}`)
       .then((r) => r.json())
       .then((m) => Array.isArray(m) && setModels(m))
       .catch(() => {});
-  }, []);
+    // refetch when the provider tab changes; s presence gates the first run
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider, s != null]);
 
   const save = async (patch: Record<string, unknown>, section: string) => {
     const res = await fetch("/api/settings", {
@@ -111,23 +139,86 @@ export default function SettingsPage() {
           </div>
         </Panel>
 
-        <Panel title="Models // LM Studio" right={saved === "llm" ? <span className="label" style={{ color: "var(--up)" }}>saved ✓</span> : undefined}>
+        <Panel title="AI Models" right={saved === "llm" ? <span className="label" style={{ color: "var(--up)" }}>saved ✓</span> : undefined}>
           <div style={{ padding: 12 }}>
-            <Row label="Server URL">
-              <input className="field" value={s.llm.url} onChange={(e) => setS({ ...s, llm: { ...s.llm, url: e.target.value } })} />
+            <Row label="Provider">
+              <div className="seg" style={{ width: 340 }}>
+                {PROVIDERS.map((p) => (
+                  <button
+                    key={p.id}
+                    className={provider === p.id ? "active" : ""}
+                    onClick={() => setS({ ...s, llm: { ...s.llm, provider: p.id } })}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
             </Row>
-            <Row label="Chat model">
-              <input className="field" list="models" value={s.llm.model} placeholder="auto-pick" onChange={(e) => setS({ ...s, llm: { ...s.llm, model: e.target.value } })} />
-            </Row>
+
+            {provider === "lmstudio" && (
+              <>
+                <Row label="Server URL">
+                  <input className="field" value={s.llm.url} onChange={(e) => setS({ ...s, llm: { ...s.llm, url: e.target.value } })} />
+                </Row>
+                <Row label="Chat model">
+                  <input className="field" list="models" value={s.llm.model} placeholder="auto-pick" onChange={(e) => setS({ ...s, llm: { ...s.llm, model: e.target.value } })} />
+                </Row>
+              </>
+            )}
+
+            {provider === "openai" && (
+              <>
+                <Row label="API key">
+                  <input className="field" type="password" placeholder={s.llm.openaiApiKey || "sk-…"} value={openaiKey} onChange={(e) => setOpenaiKey(e.target.value.trim())} />
+                </Row>
+                <Row label="Model">
+                  <input className="field" list="models" value={s.llm.openaiModel} onChange={(e) => setS({ ...s, llm: { ...s.llm, openaiModel: e.target.value } })} />
+                </Row>
+              </>
+            )}
+
+            {provider === "anthropic" && (
+              <>
+                <Row label="API key">
+                  <input className="field" type="password" placeholder={s.llm.anthropicApiKey || "sk-ant-…"} value={anthropicKey} onChange={(e) => setAnthropicKey(e.target.value.trim())} />
+                </Row>
+                <Row label="Model">
+                  <input className="field" list="models" value={s.llm.anthropicModel} onChange={(e) => setS({ ...s, llm: { ...s.llm, anthropicModel: e.target.value } })} />
+                </Row>
+              </>
+            )}
+
             <Row label="Embed model">
-              <input className="field" list="models" value={s.llm.embedModel} onChange={(e) => setS({ ...s, llm: { ...s.llm, embedModel: e.target.value } })} />
+              <input className="field" value={s.llm.embedModel} onChange={(e) => setS({ ...s, llm: { ...s.llm, embedModel: e.target.value } })} />
             </Row>
             <datalist id="models">
               {models.map((m) => (
                 <option key={m} value={m} />
               ))}
             </datalist>
-            <button className="btn" style={{ marginTop: 8 }} onClick={() => save({ llm: s.llm }, "llm")}>
+            <div className="label" style={{ margin: "6px 0 4px", lineHeight: 1.6 }}>
+              provider powers the copilot, news triage, and auto-research.
+              embeddings (semantic research search) always use LM Studio.
+              {provider !== "lmstudio" && " frontier models bill per token — keys stay in data/settings.json (gitignored)."}
+            </div>
+            <button
+              className="btn"
+              style={{ marginTop: 8 }}
+              onClick={() => {
+                save(
+                  {
+                    llm: {
+                      ...s.llm,
+                      ...(openaiKey && { openaiApiKey: openaiKey }),
+                      ...(anthropicKey && { anthropicApiKey: anthropicKey }),
+                    },
+                  },
+                  "llm"
+                );
+                setOpenaiKey("");
+                setAnthropicKey("");
+              }}
+            >
               SAVE MODELS
             </button>
           </div>
