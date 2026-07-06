@@ -33,6 +33,7 @@ const LS_KEY = "vibetrader.watchlist.v2";
 
 const RESEARCH_H_KEY = "vibetrader.researchHeight";
 const TAB_KEY = "vibetrader.mainTab";
+const SYMBOL_KEY = "vibetrader.symbol";
 
 type MainTab = "research" | "news";
 
@@ -58,12 +59,18 @@ export default function Home() {
     const h = parseInt(localStorage.getItem(RESEARCH_H_KEY) ?? "", 10);
     if (h >= 140) setResearchH(h);
     if (localStorage.getItem(TAB_KEY) === "news") setMainTab("news");
+    const sym = localStorage.getItem(SYMBOL_KEY);
+    if (sym && /^[A-Z0-9./]{1,12}$/.test(sym)) setSymbol(sym);
     setHydrated(true);
   }, []);
 
   useEffect(() => {
     if (hydrated) localStorage.setItem(TAB_KEY, mainTab);
   }, [mainTab, hydrated]);
+
+  useEffect(() => {
+    if (hydrated) localStorage.setItem(SYMBOL_KEY, symbol);
+  }, [symbol, hydrated]);
 
   // watchdog stories that arrive while the news tab is hidden get a dot
   useEffect(() => {
