@@ -15,6 +15,7 @@ Next.js App Router + TypeScript. Dev server runs on **port 3100** (`npm run dev`
 ## Gotchas
 
 - Alpaca crypto: $10 minimum order; fees charged in the base asset (buys land smaller than ordered); `DELETE /positions/{symbol}` closes the ENTIRE position — sell exact quantities instead.
+- Margin is account-level and automatic — no per-order leverage flag. `buying_power` is intraday (equity × multiplier, 4× when equity ≥ $25k); overnight holds must fit `regt_buying_power` (2×). Crypto and fractional/notional orders are non-marginable (cash only).
 - Brackets are equities-only; crypto time-in-force must be `gtc`.
 - Turbopack's file watcher on Windows sometimes misses edits — restart the dev server if changes don't apply.
 

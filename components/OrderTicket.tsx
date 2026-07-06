@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePoll } from "@/hooks/usePoll";
 import { useStream } from "@/hooks/useStream";
-import { Snapshot, snapPrice, fmtUsd } from "@/lib/types";
+import { Account, Snapshot, snapPrice, fmtUsd } from "@/lib/types";
 import { Panel } from "./Panel";
 
 type Side = "buy" | "sell";
@@ -30,6 +30,16 @@ export function OrderTicket({ symbol }: { symbol: string }) {
   const { prices: live } = useStream();
   const { price } = snapPrice(snap?.[symbol], live[symbol]?.p);
   const isCrypto = symbol.includes("/");
+
+  const { data: account } = usePoll<Account>("/api/account", 15_000);
+  // margin only applies to whole-share equity orders; crypto and fractional
+  // (dollar-based) orders draw from non-marginable buying power
+  const marginable = !isCrypto && mode === "qty";
+  const bp = account
+    ? parseFloat(marginable ? account.buying_power : account.non_marginable_buying_power)
+    : null;
+  const regtBp = account ? parseFloat(account.regt_buying_power) : null;
+  const cash = account ? parseFloat(account.cash) : null;
 
   // disarm when inputs change
   useEffect(
@@ -164,6 +174,34 @@ export function OrderTicket({ symbol }: { symbol: string }) {
           aria-label={mode === "qty" ? "Quantity" : "Dollar amount"}
         />
 
+        {side === "buy" && bp != null && bp > 0 && price != null && price > 0 && (
+          <div style={{ display: "flex", gap: 6 }}>
+            {([0.25, 0.5, 1] as const).map((f) => {
+              // shave MAX so a market order can't overshoot BP on a tick up
+              const spend = bp * f * (f === 1 ? 0.98 : 1);
+              const px = type === "limit" && limitPrice ? parseFloat(limitPrice) : price;
+              const val =
+                mode === "notional"
+                  ? spend.toFixed(2)
+                  : isCrypto
+                    ? (spend / px).toFixed(6)
+                    : String(Math.floor(spend / px));
+              const empty = mode === "qty" && !isCrypto && Math.floor(spend / px) < 1;
+              return (
+                <button
+                  key={f}
+                  className="btn"
+                  disabled={empty}
+                  onClick={() => setAmount(val)}
+                  style={{ flex: 1, padding: "5px 0", fontSize: 10, color: "var(--ink-dim)" }}
+                >
+                  {f === 1 ? "MAX BP" : `${f * 100}%`}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {type === "limit" && (
           <input
             className="field"
@@ -241,6 +279,19 @@ export function OrderTicket({ symbol }: { symbol: string }) {
         )}
 
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+          <span className="label">
+            Buying power
+            {marginable && account?.multiplier && (
+              <span style={{ color: "var(--accent)", marginLeft: 6 }}>
+                {parseFloat(account.multiplier)}×
+              </span>
+            )}
+            {!marginable && <span style={{ marginLeft: 6 }}>cash only</span>}
+          </span>
+          <span style={{ color: "var(--accent)" }}>{fmtUsd(bp)}</span>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
           <span className="label">Est. {side === "buy" ? "cost" : "credit"}</span>
           <span style={{ color: "var(--ink-dim)" }}>
             {estCost != null && valid ? fmtUsd(estCost) : "—"}
@@ -249,6 +300,28 @@ export function OrderTicket({ symbol }: { symbol: string }) {
             )}
           </span>
         </div>
+
+        {side === "buy" && valid && estCost != null && bp != null && (
+          estCost > bp ? (
+            <div className="label" style={{ color: "var(--down)" }}>
+              exceeds buying power — order will be rejected
+            </div>
+          ) : marginable && regtBp != null && estCost > regtBp ? (
+            <div className="label" style={{ color: "var(--amber)" }}>
+              ⚠ day-trade sizing — exceeds overnight (Reg-T) BP, close before market close
+            </div>
+          ) : cash != null && estCost > cash ? (
+            <div className="label" style={{ color: "var(--amber)" }}>
+              on margin — borrowing {fmtUsd(estCost - cash)}
+            </div>
+          ) : null
+        )}
+
+        {side === "sell" && !isCrypto && account?.shorting_enabled && (
+          <div className="label" style={{ color: "var(--ink-faint)" }}>
+            selling more than you hold opens a short (margin, whole shares)
+          </div>
+        )}
 
         <button
           className={`btn ${side === "buy" ? "btn-buy" : "btn-sell"}`}

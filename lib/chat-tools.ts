@@ -168,11 +168,19 @@ export async function runChatTool(name: string, args: Record<string, unknown>): 
       const a = await trading.get<Record<string, string>>("/account");
       const equity = num(a.equity)!;
       const lastEquity = num(a.last_equity)!;
+      const gross =
+        Math.abs(num(a.long_market_value) ?? 0) + Math.abs(num(a.short_market_value) ?? 0);
       return {
         status: a.status,
         equity,
         cash: num(a.cash),
         buying_power: num(a.buying_power),
+        // margin picture: buying_power is intraday (equity × multiplier);
+        // overnight holds must fit regt_buying_power; crypto/fractional are cash-only
+        margin_multiplier: num(a.multiplier),
+        overnight_regt_buying_power: num(a.regt_buying_power),
+        non_marginable_buying_power: num(a.non_marginable_buying_power),
+        account_leverage: equity ? +(gross / equity).toFixed(2) : null,
         day_pl: +(equity - lastEquity).toFixed(2),
         day_pl_pct: +(((equity - lastEquity) / lastEquity) * 100).toFixed(3),
       };

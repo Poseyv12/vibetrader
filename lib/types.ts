@@ -5,7 +5,17 @@ export interface Account {
   equity: string;
   last_equity: string;
   cash: string;
+  /** intraday buying power — equity × multiplier (4× when equity ≥ $25k) */
   buying_power: string;
+  /** overnight (Reg-T) buying power — positions held past close must fit in this */
+  regt_buying_power: string;
+  /** cash-only buying power — crypto and fractional orders can't use margin */
+  non_marginable_buying_power: string;
+  multiplier: string;
+  long_market_value: string;
+  short_market_value: string;
+  maintenance_margin: string;
+  shorting_enabled: boolean;
   portfolio_value: string;
   daytrade_count: number;
 }
