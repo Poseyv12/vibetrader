@@ -271,6 +271,9 @@ export function CandleChart({ symbol }: { symbol: string }) {
           };
           loadedSymbolRef.current = symbol;
         }
+        // dragging the price axis puts the scale into manual mode; re-enable
+        // auto-scale so the new symbol's price range comes into view
+        chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
         chartRef.current?.timeScale().fitContent();
       } finally {
         if (!cancelled) setLoading(false);
