@@ -4,6 +4,8 @@ A dark, CRT-flavored **AI-assisted paper-trading terminal** for [Alpaca](https:/
 
 ![VIBETRADER dashboard screenshot](public/vibetrader-dashboard.jpg)
 
+![VIBETRADER wide trading terminal screenshot](public/vibetrader-terminal-wide.jpg)
+
 > **Paper trading only.** VIBETRADER is for learning, research workflows, and local experimentation. It is not financial advice, not a signal service, and not built for unattended real-money trading.
 
 ## What it does
