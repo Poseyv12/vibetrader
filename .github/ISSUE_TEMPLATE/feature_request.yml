@@ -1,0 +1,46 @@
+name: Feature request
+description: Suggest an improvement or new paper-trading workflow
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        VIBETRADER is paper-trading focused. Features that enable AI-driven order placement or real-money workflows need extra safety review.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: What should this improve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Dashboard/UI
+        - Alpaca market data
+        - Paper order workflow
+        - Local LLM research
+        - Alerts/news watchdog
+        - Performance analytics
+        - Documentation
+        - Other
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety impact
+      options:
+        - label: This does not add real-money trading behavior.
+        - label: This does not expose API keys or runtime data to the browser.
