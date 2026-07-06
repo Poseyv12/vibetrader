@@ -1,7 +1,7 @@
 {
-  "name": "alpaca-trader",
+  "name": "vibetrader",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "scripts": {
     "dev": "next dev --turbopack -p 3100",
     "build": "next build",
@@ -27,5 +27,15 @@
     "puppeteer-core": "^25.3.0",
     "tailwindcss": "^4",
     "typescript": "^5"
-  }
+  },
+  "description": "AI-assisted Alpaca paper-trading terminal with local-LLM research, alerts, journals, and performance dashboards.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Poseyv12/vibetrader.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Poseyv12/vibetrader/issues"
+  },
+  "homepage": "https://github.com/Poseyv12/vibetrader#readme"
 }
