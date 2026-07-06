@@ -6,6 +6,12 @@ A dark, CRT-flavored **AI-assisted paper-trading terminal** for [Alpaca](https:/
 
 ![VIBETRADER wide trading terminal screenshot](public/vibetrader-terminal-wide.jpg)
 
+### Colorway examples
+
+![VIBETRADER BTC/USD green and magenta colorway](public/vibetrader-colorway-btc-green-magenta.jpg)
+
+![VIBETRADER SPY amber and green colorway](public/vibetrader-colorway-spy-amber-green.jpg)
+
 > **Paper trading only.** VIBETRADER is for learning, research workflows, and local experimentation. It is not financial advice, not a signal service, and not built for unattended real-money trading.
 
 ## What it does
