@@ -17,6 +17,14 @@ export async function PUT(req: NextRequest) {
       if (patch.alpaca[k] === "") delete patch.alpaca[k];
     }
   }
+  if (patch.llm) {
+    for (const k of ["openaiApiKey", "anthropicApiKey"] as const) {
+      if (typeof patch.llm[k] === "string" && patch.llm[k].includes("••")) {
+        delete patch.llm[k];
+      }
+      if (patch.llm[k] === "") delete patch.llm[k];
+    }
+  }
 
   updateSettings(patch);
   return NextResponse.json(publicSettings());
