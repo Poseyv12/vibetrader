@@ -8,7 +8,18 @@ import { Panel } from "./Panel";
 
 type Side = "buy" | "sell";
 type Mode = "qty" | "notional";
-type OrdType = "market" | "limit";
+type OrdType = "market" | "limit" | "stop" | "stop_limit" | "trailing_stop";
+
+const ORD_TYPES: { id: OrdType; label: string; cryptoOk: boolean }[] = [
+  { id: "market", label: "MKT", cryptoOk: true },
+  { id: "limit", label: "LMT", cryptoOk: true },
+  { id: "stop", label: "STP", cryptoOk: false },
+  { id: "stop_limit", label: "S-LMT", cryptoOk: true },
+  { id: "trailing_stop", label: "TRL", cryptoOk: false },
+];
+const usesLimit = (t: OrdType) => t === "limit" || t === "stop_limit";
+const usesStop = (t: OrdType) => t === "stop" || t === "stop_limit";
+const isStopType = (t: OrdType) => t !== "market" && t !== "limit";
 
 export function OrderTicket({ symbol }: { symbol: string }) {
   const [side, setSide] = useState<Side>("buy");
@@ -16,6 +27,8 @@ export function OrderTicket({ symbol }: { symbol: string }) {
   const [type, setType] = useState<OrdType>("market");
   const [amount, setAmount] = useState("");
   const [limitPrice, setLimitPrice] = useState("");
+  const [stopPrice, setStopPrice] = useState("");
+  const [trailPct, setTrailPct] = useState("");
   const [bracket, setBracket] = useState(false);
   const [takeProfit, setTakeProfit] = useState("");
   const [stopLoss, setStopLoss] = useState("");
@@ -44,13 +57,23 @@ export function OrderTicket({ symbol }: { symbol: string }) {
   // disarm when inputs change
   useEffect(
     () => setArmed(false),
-    [symbol, side, mode, type, amount, limitPrice, bracket, takeProfit, stopLoss]
+    [symbol, side, mode, type, amount, limitPrice, stopPrice, trailPct, bracket, takeProfit, stopLoss]
   );
 
   // brackets are equities-only; drop the legs if the user switches to crypto
   useEffect(() => {
     if (isCrypto) setBracket(false);
   }, [isCrypto]);
+
+  // crypto only supports market/limit/stop-limit; stops need share qty and
+  // can't carry bracket legs
+  useEffect(() => {
+    if (isCrypto && !ORD_TYPES.find((t) => t.id === type)?.cryptoOk) setType("market");
+    if (isStopType(type)) {
+      setMode("qty");
+      setBracket(false);
+    }
+  }, [isCrypto, type]);
 
   const amt = parseFloat(amount);
   const tp = parseFloat(takeProfit);
@@ -60,15 +83,19 @@ export function OrderTicket({ symbol }: { symbol: string }) {
   const valid =
     !Number.isNaN(amt) &&
     amt > 0 &&
-    (type === "market" || parseFloat(limitPrice) > 0) &&
+    (!usesLimit(type) || parseFloat(limitPrice) > 0) &&
+    (!usesStop(type) || parseFloat(stopPrice) > 0) &&
+    (type !== "trailing_stop" || parseFloat(trailPct) > 0) &&
     bracketValid;
 
+  // stops estimate at their trigger/limit price; trailing at the last price
+  const estPx = usesLimit(type)
+    ? parseFloat(limitPrice)
+    : type === "stop"
+      ? parseFloat(stopPrice)
+      : price;
   const estCost =
-    mode === "notional"
-      ? amt
-      : price != null
-        ? amt * (type === "limit" && limitPrice ? parseFloat(limitPrice) : price)
-        : null;
+    mode === "notional" ? amt : estPx != null && estPx > 0 ? amt * estPx : null;
 
   const submit = async () => {
     if (!armed) {
@@ -87,7 +114,9 @@ export function OrderTicket({ symbol }: { symbol: string }) {
           side,
           type,
           ...(mode === "qty" ? { qty: amt } : { notional: amt }),
-          ...(type === "limit" ? { limit_price: parseFloat(limitPrice) } : {}),
+          ...(usesLimit(type) ? { limit_price: parseFloat(limitPrice) } : {}),
+          ...(usesStop(type) ? { stop_price: parseFloat(stopPrice) } : {}),
+          ...(type === "trailing_stop" ? { trail_percent: parseFloat(trailPct) } : {}),
           ...(bracket ? { take_profit: tp, stop_loss: sl } : {}),
         }),
       });
@@ -138,29 +167,37 @@ export function OrderTicket({ symbol }: { symbol: string }) {
           </button>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-          <div className="seg">
-            <button className={mode === "qty" ? "active" : ""} onClick={() => setMode("qty")}>
-              SHARES
-            </button>
+        <div className="seg" role="radiogroup" aria-label="Order type">
+          {ORD_TYPES.filter((t) => !isCrypto || t.cryptoOk).map((t) => (
             <button
-              className={mode === "notional" ? "active" : ""}
-              onClick={() => setMode("notional")}
-              disabled={bracket}
-              style={bracket ? { opacity: 0.35, cursor: "not-allowed" } : {}}
-              title={bracket ? "bracket orders need share qty" : undefined}
+              key={t.id}
+              className={type === t.id ? "active" : ""}
+              onClick={() => setType(t.id)}
             >
-              DOLLARS
+              {t.label}
             </button>
-          </div>
-          <div className="seg">
-            <button className={type === "market" ? "active" : ""} onClick={() => setType("market")}>
-              MKT
-            </button>
-            <button className={type === "limit" ? "active" : ""} onClick={() => setType("limit")}>
-              LMT
-            </button>
-          </div>
+          ))}
+        </div>
+
+        <div className="seg" role="radiogroup" aria-label="Sizing mode">
+          <button className={mode === "qty" ? "active" : ""} onClick={() => setMode("qty")}>
+            SHARES
+          </button>
+          <button
+            className={mode === "notional" ? "active" : ""}
+            onClick={() => setMode("notional")}
+            disabled={bracket || isStopType(type)}
+            style={bracket || isStopType(type) ? { opacity: 0.35, cursor: "not-allowed" } : {}}
+            title={
+              isStopType(type)
+                ? "stop orders need share qty"
+                : bracket
+                  ? "bracket orders need share qty"
+                  : undefined
+            }
+          >
+            DOLLARS
+          </button>
         </div>
 
         <input
@@ -174,12 +211,38 @@ export function OrderTicket({ symbol }: { symbol: string }) {
           aria-label={mode === "qty" ? "Quantity" : "Dollar amount"}
         />
 
+        {usesStop(type) && (
+          <input
+            className="field"
+            type="number"
+            min="0"
+            step="any"
+            placeholder="STOP (TRIGGER) PRICE_"
+            value={stopPrice}
+            onChange={(e) => setStopPrice(e.target.value)}
+            aria-label="Stop price"
+          />
+        )}
+
+        {type === "trailing_stop" && (
+          <input
+            className="field"
+            type="number"
+            min="0"
+            step="any"
+            placeholder="TRAIL %_ (e.g. 5 = trail 5% behind)"
+            value={trailPct}
+            onChange={(e) => setTrailPct(e.target.value)}
+            aria-label="Trail percent"
+          />
+        )}
+
         {side === "buy" && bp != null && bp > 0 && price != null && price > 0 && (
           <div style={{ display: "flex", gap: 6 }}>
             {([0.25, 0.5, 1] as const).map((f) => {
               // shave MAX so a market order can't overshoot BP on a tick up
               const spend = bp * f * (f === 1 ? 0.98 : 1);
-              const px = type === "limit" && limitPrice ? parseFloat(limitPrice) : price;
+              const px = usesLimit(type) && limitPrice ? parseFloat(limitPrice) : price;
               const val =
                 mode === "notional"
                   ? spend.toFixed(2)
@@ -202,7 +265,7 @@ export function OrderTicket({ symbol }: { symbol: string }) {
           </div>
         )}
 
-        {type === "limit" && (
+        {usesLimit(type) && (
           <input
             className="field"
             type="number"
@@ -215,7 +278,7 @@ export function OrderTicket({ symbol }: { symbol: string }) {
           />
         )}
 
-        {!isCrypto && (
+        {!isCrypto && !isStopType(type) && (
           <button
             className="btn"
             onClick={() => {
