@@ -9,11 +9,12 @@ import {
   ColorType,
   LineStyle,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
   type MouseEventParams,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { Bar, Snapshot, snapPrice, fmtNum, priceDigits } from "@/lib/types";
+import { Bar, Position, Snapshot, displaySymbol, snapPrice, fmtNum, priceDigits } from "@/lib/types";
 import { hexToRgba } from "@/lib/theme-client";
 import { usePoll } from "@/hooks/usePoll";
 import { useStream } from "@/hooks/useStream";
@@ -27,14 +28,17 @@ const UP = "#26a69a";
 const DOWN = "#ef5350";
 
 const ACCENT = "#22d3ee";
+const AMBER = "#eda100";
 
 function themeColors() {
-  if (typeof window === "undefined") return { up: UP, down: DOWN, accent: ACCENT };
+  if (typeof window === "undefined")
+    return { up: UP, down: DOWN, accent: ACCENT, amber: AMBER };
   const css = getComputedStyle(document.documentElement);
   return {
     up: css.getPropertyValue("--up").trim() || UP,
     down: css.getPropertyValue("--down").trim() || DOWN,
     accent: css.getPropertyValue("--accent").trim() || ACCENT,
+    amber: css.getPropertyValue("--amber").trim() || AMBER,
   };
 }
 
@@ -69,6 +73,15 @@ interface Ohlc {
   l: number;
   c: number;
   time: UTCTimestamp;
+}
+
+// client-safe mirror of lib/alerts.ts Alert (that module touches fs)
+interface ChartAlert {
+  id: string;
+  symbol: string;
+  op: "above" | "below";
+  price: number;
+  triggered?: { price: number; at: number };
 }
 
 /**
@@ -199,6 +212,9 @@ export function CandleChart({ symbol }: { symbol: string }) {
     `/api/snapshots?symbols=${encodeURIComponent(symbol)}`,
     10_000
   );
+  const { data: positions } = usePoll<Position[]>("/api/positions", 10_000);
+  const { data: alerts, refresh: refreshAlerts } = usePoll<ChartAlert[]>("/api/alerts", 30_000);
+  const priceLinesRef = useRef<IPriceLine[]>([]);
   const { prices: livePrices } = useStream();
   const livePrice = livePrices[symbol]?.p;
   const { price: last, chg } = snapPrice(snap?.[symbol], livePrice);
@@ -490,6 +506,56 @@ export function CandleChart({ symbol }: { symbol: string }) {
       localStorage.setItem(TL_KEY, JSON.stringify(drawings));
     }
   }, [drawings, symbol, range, themeTick, barsTick]);
+
+  // position entry + live alert levels as labeled price lines
+  useEffect(() => {
+    const candles = candlesRef.current;
+    if (!candles) return;
+    for (const pl of priceLinesRef.current) {
+      try {
+        candles.removePriceLine(pl);
+      } catch {}
+    }
+    priceLinesRef.current = [];
+
+    const { up, down, amber } = themeColors();
+    const pos = (positions ?? []).find((p) => displaySymbol(p) === symbol);
+    if (pos) {
+      const entry = parseFloat(pos.avg_entry_price);
+      const qty = parseFloat(pos.qty);
+      if (entry > 0 && qty !== 0) {
+        priceLinesRef.current.push(
+          candles.createPriceLine({
+            price: entry,
+            color: parseFloat(pos.unrealized_pl) >= 0 ? up : down,
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: `${pos.side} ${fmtNum(Math.abs(qty))}`,
+          })
+        );
+      }
+    }
+    for (const a of (alerts ?? []).filter((a) => a.symbol === symbol && !a.triggered)) {
+      priceLinesRef.current.push(
+        candles.createPriceLine({
+          price: a.price,
+          color: amber,
+          lineWidth: 1,
+          lineStyle: LineStyle.Dotted,
+          axisLabelVisible: true,
+          title: `⚡ ${a.op}`,
+        })
+      );
+    }
+  }, [positions, alerts, symbol, themeTick]);
+
+  // a triggered alert should drop off the chart right away
+  useEffect(() => {
+    const fn = () => refreshAlerts();
+    window.addEventListener("vt:alert", fn);
+    return () => window.removeEventListener("vt:alert", fn);
+  }, [refreshAlerts]);
 
   // Escape backs out of drawing / closes the tool menu
   useEffect(() => {
