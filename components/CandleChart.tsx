@@ -314,6 +314,57 @@ export function CandleChart({ symbol }: { symbol: string }) {
     window.dispatchEvent(new Event("vt:refresh"));
   };
 
+  // tail refresh — new bars come from the server (it owns bar boundaries),
+  // so fresh candles append without reloading the chart or disturbing the view
+  useEffect(() => {
+    const id = setInterval(async () => {
+      if (document.hidden || loadedSymbolRef.current !== symbol) return;
+      const candles = candlesRef.current;
+      const volume = volumeRef.current;
+      const lastLoaded = lastBarRef.current;
+      if (!candles || !volume || !lastLoaded) return;
+      try {
+        const res = await fetch(`/api/bars?symbol=${encodeURIComponent(symbol)}&range=${range}`);
+        const body = await res.json();
+        const fresh: Bar[] = body.bars ?? [];
+        // bars from the last known candle onward: first replaces it, rest append
+        const tail = fresh.filter(
+          (b) => Math.floor(Date.parse(b.t) / 1000) >= lastLoaded.time
+        );
+        if (!tail.length || loadedSymbolRef.current !== symbol) return;
+
+        const cutoff = Math.floor(Date.parse(tail[0].t) / 1000);
+        barsRef.current = [
+          ...barsRef.current.filter((b) => Math.floor(Date.parse(b.t) / 1000) < cutoff),
+          ...tail,
+        ];
+
+        const { up: upC, down: downC } = themeColors();
+        const volUp = hexToRgba(upC, 0.35);
+        const volDown = hexToRgba(downC, 0.35);
+        for (const b of tail) {
+          const time = Math.floor(Date.parse(b.t) / 1000) as UTCTimestamp;
+          candles.update({ time, open: b.o, high: b.h, low: b.l, close: b.c });
+          volume.update({ time, value: b.v, color: b.c >= b.o ? volUp : volDown });
+        }
+        for (const ind of INDICATORS) {
+          smaSeriesRef.current[ind.key]?.setData(smaData(barsRef.current, ind.period));
+        }
+        const lb = tail[tail.length - 1];
+        lastBarRef.current = {
+          time: Math.floor(Date.parse(lb.t) / 1000) as UTCTimestamp,
+          open: lb.o,
+          high: lb.h,
+          low: lb.l,
+          close: lb.c,
+        };
+      } catch {
+        /* transient fetch failure — next tick retries */
+      }
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [symbol, range, themeTick]);
+
   // stream ticks move the last candle in place
   useEffect(() => {
     const lb = lastBarRef.current;
