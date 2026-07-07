@@ -8,6 +8,10 @@ import {
   LineSeries,
   ColorType,
   LineStyle,
+  createSeriesMarkers,
+  type ISeriesMarkersPluginApi,
+  type SeriesMarker,
+  type Time,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
@@ -83,6 +87,19 @@ interface ChartAlert {
   price: number;
   triggered?: { price: number; at: number };
 }
+
+// client-safe mirror of lib/trade-log.ts TradeLogEntry
+interface ChartFill {
+  id: string;
+  ts: number;
+  symbol: string; // trade updates may report crypto slashless (BTCUSD)
+  side: string;
+  qty: number;
+  price: number;
+  event: string;
+}
+
+const FILLS_KEY = "vibetrader.showFills";
 
 /**
  * Drawings are rendered as LineSeries, so they pan/zoom with the chart for
@@ -179,6 +196,7 @@ export function CandleChart({ symbol }: { symbol: string }) {
     sma50: true,
     sma200: false,
   });
+  const [showFills, setShowFills] = useState(true);
   const [pendingAlert, setPendingAlert] = useState<{ price: number; x: number; y: number } | null>(
     null
   );
@@ -206,7 +224,12 @@ export function CandleChart({ symbol }: { symbol: string }) {
       const saved = JSON.parse(localStorage.getItem(IND_LS_KEY) ?? "");
       if (saved && typeof saved === "object") setInds((d) => ({ ...d, ...saved }));
     } catch {}
+    if (localStorage.getItem(FILLS_KEY) === "0") setShowFills(false);
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem(FILLS_KEY, showFills ? "1" : "0");
+  }, [showFills]);
 
   const { data: snap } = usePoll<Record<string, Snapshot>>(
     `/api/snapshots?symbols=${encodeURIComponent(symbol)}`,
@@ -214,7 +237,9 @@ export function CandleChart({ symbol }: { symbol: string }) {
   );
   const { data: positions } = usePoll<Position[]>("/api/positions", 10_000);
   const { data: alerts, refresh: refreshAlerts } = usePoll<ChartAlert[]>("/api/alerts", 30_000);
+  const { data: trades } = usePoll<ChartFill[]>("/api/trades", 30_000);
   const priceLinesRef = useRef<IPriceLine[]>([]);
+  const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const { prices: livePrices } = useStream();
   const livePrice = livePrices[symbol]?.p;
   const { price: last, chg } = snapPrice(snap?.[symbol], livePrice);
@@ -300,6 +325,7 @@ export function CandleChart({ symbol }: { symbol: string }) {
     chartRef.current = chart;
     candlesRef.current = candles;
     volumeRef.current = volume;
+    markersRef.current = createSeriesMarkers(candles, []);
 
     return () => {
       ro.disconnect();
@@ -557,6 +583,48 @@ export function CandleChart({ symbol }: { symbol: string }) {
     return () => window.removeEventListener("vt:alert", fn);
   }, [refreshAlerts]);
 
+  // fills from the trade log as arrows on the candles they landed in
+  useEffect(() => {
+    const plugin = markersRef.current;
+    if (!plugin) return;
+    const times = barsRef.current.map((b) => Math.floor(Date.parse(b.t) / 1000));
+    const slashless = symbol.replace("/", "");
+    if (!showFills || !trades?.length || !times.length) {
+      plugin.setMarkers([]);
+      return;
+    }
+    const { up, down } = themeColors();
+    const markers: SeriesMarker<Time>[] = [];
+    for (const t of trades) {
+      if (t.symbol !== symbol && t.symbol !== slashless) continue;
+      const ts = Math.floor(t.ts / 1000);
+      if (ts < times[0]) continue; // fill predates the loaded range
+      // snap to the bar containing the fill (last bar time <= fill time)
+      let lo = 0;
+      let hi = times.length - 1;
+      let idx = 0;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (times[mid] <= ts) {
+          idx = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      const buy = t.side === "buy";
+      markers.push({
+        time: times[idx] as Time,
+        position: buy ? "belowBar" : "aboveBar",
+        shape: buy ? "arrowUp" : "arrowDown",
+        color: buy ? up : down,
+        text: `${buy ? "B" : "S"} ${t.qty}`,
+        size: 1,
+      });
+    }
+    plugin.setMarkers(markers.sort((a, b) => (a.time as number) - (b.time as number)));
+  }, [trades, symbol, range, showFills, barsTick, themeTick]);
+
   // Escape backs out of drawing / closes the tool menu
   useEffect(() => {
     if (!tool && !menuOpen) return;
@@ -733,6 +801,21 @@ export function CandleChart({ symbol }: { symbol: string }) {
               {ind.label}
             </button>
           ))}
+          <button
+            className="btn btn-ghost"
+            onClick={() => setShowFills((v) => !v)}
+            aria-pressed={showFills}
+            style={{
+              fontSize: 9,
+              letterSpacing: "0.08em",
+              padding: "2px 7px",
+              color: showFills ? "var(--up)" : "var(--ink-faint)",
+              border: "1px solid",
+              borderColor: showFills ? "rgba(38,166,154,.4)" : "var(--line)",
+            }}
+          >
+            ▲▼ FILLS
+          </button>
           <span style={{ position: "relative" }}>
             <button
               className="btn btn-ghost"
