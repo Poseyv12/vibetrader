@@ -7,8 +7,10 @@ import {
   HistogramSeries,
   LineSeries,
   ColorType,
+  LineStyle,
   type IChartApi,
   type ISeriesApi,
+  type MouseEventParams,
   type UTCTimestamp,
 } from "lightweight-charts";
 import { Bar, Snapshot, snapPrice, fmtNum, priceDigits } from "@/lib/types";
@@ -24,12 +26,15 @@ type Range = (typeof RANGES)[number];
 const UP = "#26a69a";
 const DOWN = "#ef5350";
 
+const ACCENT = "#22d3ee";
+
 function themeColors() {
-  if (typeof window === "undefined") return { up: UP, down: DOWN };
+  if (typeof window === "undefined") return { up: UP, down: DOWN, accent: ACCENT };
   const css = getComputedStyle(document.documentElement);
   return {
     up: css.getPropertyValue("--up").trim() || UP,
     down: css.getPropertyValue("--down").trim() || DOWN,
+    accent: css.getPropertyValue("--accent").trim() || ACCENT,
   };
 }
 
@@ -66,6 +71,87 @@ interface Ohlc {
   time: UTCTimestamp;
 }
 
+/**
+ * Drawings are rendered as LineSeries, so they pan/zoom with the chart for
+ * free and stay hit-testable for click-to-delete. Endpoints snap to bar
+ * times — arbitrary times would insert phantom columns into the shared time
+ * scale and distort candle spacing. Drawings are kept per range because each
+ * range uses a different bar resolution.
+ */
+const DRAW_TOOLS = [
+  { kind: "trend", icon: "⌁", label: "TREND LINE", clicks: 2 },
+  { kind: "ray", icon: "↗", label: "RAY", clicks: 2 },
+  { kind: "hline", icon: "─", label: "H-LINE", clicks: 1 },
+  { kind: "fib", icon: "≡", label: "FIB RETRACE", clicks: 2 },
+] as const;
+type DrawKind = (typeof DRAW_TOOLS)[number]["kind"];
+
+interface Drawing {
+  id: string;
+  kind: DrawKind;
+  range: Range;
+  a: { time: number; price: number };
+  b?: { time: number; price: number };
+}
+// key predates the extra tools — old entries are plain trendlines
+const TL_KEY = "vibetrader.trendlines";
+
+const FIB_RATIOS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+
+/**
+ * Resolve a drawing to one or more polylines. Bars render uniformly by INDEX
+ * (weekend gaps are collapsed), so ray extrapolation works in index space —
+ * extending by timestamp would bend the line on screen.
+ */
+function drawingSegments(
+  d: Drawing,
+  times: number[]
+): { pts: { time: number; value: number }[]; dashed?: boolean }[] {
+  const { a, b } = d;
+  if (d.kind === "hline") {
+    const from = times[0] ?? a.time;
+    const to = times[times.length - 1] ?? a.time;
+    if (from === to) return [];
+    return [{ pts: [{ time: from, value: a.price }, { time: to, value: a.price }] }];
+  }
+  if (!b) return [];
+  if (d.kind === "fib") {
+    const from = Math.min(a.time, b.time);
+    const to = Math.max(a.time, b.time);
+    return FIB_RATIOS.map((r) => ({
+      dashed: r !== 0 && r !== 1,
+      pts: [
+        { time: from, value: b.price - (b.price - a.price) * r },
+        { time: to, value: b.price - (b.price - a.price) * r },
+      ],
+    }));
+  }
+  const seg = [
+    { time: a.time, value: a.price },
+    { time: b.time, value: b.price },
+  ];
+  if (d.kind === "ray") {
+    // extend from the first anchor through the second, in the drawn direction
+    const ia = times.indexOf(a.time);
+    const ib = times.indexOf(b.time);
+    if (ia !== -1 && ib !== -1 && ib !== ia) {
+      const end = ib > ia ? times.length - 1 : 0;
+      if (Math.abs(end - ia) > Math.abs(ib - ia)) {
+        const slope = (b.price - a.price) / (ib - ia);
+        return [
+          {
+            pts: [
+              { time: a.time, value: a.price },
+              { time: times[end], value: a.price + slope * (end - ia) },
+            ],
+          },
+        ];
+      }
+    }
+  }
+  return [{ pts: seg }];
+}
+
 export function CandleChart({ symbol }: { symbol: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -86,6 +172,15 @@ export function CandleChart({ symbol }: { symbol: string }) {
   const smaSeriesRef = useRef<Partial<Record<IndKey, ISeriesApi<"Line">>>>({});
   const barsRef = useRef<Bar[]>([]);
   const [themeTick, setThemeTick] = useState(0);
+  const [tool, setTool] = useState<DrawKind | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [draft, setDraft] = useState<{ time: number; price: number } | null>(null);
+  const [drawings, setDrawings] = useState<Record<string, Drawing[]>>({});
+  // series → drawing id, for click-to-delete hit-testing
+  const drawSeriesRef = useRef<Map<ISeriesApi<"Line">, string>>(new Map());
+  const drawingsLoadedRef = useRef(false);
+  // bumped when bar data lands so rays/hlines re-extend to the newest bar
+  const [barsTick, setBarsTick] = useState(0);
 
   useEffect(() => {
     const fn = () => setThemeTick((t) => t + 1);
@@ -170,14 +265,6 @@ export function CandleChart({ symbol }: { symbol: string }) {
       });
     }
 
-    // click a price level to stage an alert there
-    chart.subscribeClick((param) => {
-      if (!param.point) return;
-      const price = candles.coordinateToPrice(param.point.y);
-      if (price == null || price <= 0) return;
-      setPendingAlert({ price, x: param.point.x, y: param.point.y });
-    });
-
     chart.subscribeCrosshairMove((param) => {
       const d = param.seriesData.get(candles) as
         | { open: number; high: number; low: number; close: number }
@@ -212,6 +299,7 @@ export function CandleChart({ symbol }: { symbol: string }) {
     setLoading(true);
     setEmpty(false);
     setPendingAlert(null);
+    setDraft(null); // a half-drawn line belongs to the previous symbol/range
     lastBarRef.current = null;
     loadedSymbolRef.current = null;
 
@@ -271,6 +359,7 @@ export function CandleChart({ symbol }: { symbol: string }) {
           };
           loadedSymbolRef.current = symbol;
         }
+        setBarsTick((t) => t + 1);
         // dragging the price axis puts the scale into manual mode; re-enable
         // auto-scale so the new symbol's price range comes into view
         chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
@@ -292,6 +381,137 @@ export function CandleChart({ symbol }: { symbol: string }) {
     }
     localStorage.setItem(IND_LS_KEY, JSON.stringify(inds));
   }, [inds]);
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(TL_KEY) ?? "{}");
+      if (saved && typeof saved === "object") {
+        // entries saved before the tool menu existed are plain trendlines
+        const migrated: Record<string, Drawing[]> = {};
+        for (const [sym, arr] of Object.entries(saved as Record<string, Drawing[]>)) {
+          migrated[sym] = (arr ?? []).map((d) => ({ ...d, kind: d.kind ?? "trend" }));
+        }
+        setDrawings(migrated);
+      }
+    } catch {}
+    drawingsLoadedRef.current = true;
+  }, []);
+
+  // chart clicks: an armed tool places/removes drawings, otherwise stage an
+  // alert. Re-subscribed on state change so the handler sees current values.
+  useEffect(() => {
+    const chart = chartRef.current;
+    const candles = candlesRef.current;
+    if (!chart || !candles) return;
+
+    const onClick = (param: MouseEventParams) => {
+      if (!param.point) return;
+      const price = candles.coordinateToPrice(param.point.y);
+      if (price == null || price <= 0) return;
+
+      if (!tool) {
+        // click a price level to stage an alert there
+        setPendingAlert({ price, x: param.point.x, y: param.point.y });
+        return;
+      }
+
+      // clicking an existing drawing while a tool is armed removes it
+      if (param.hoveredSeries) {
+        const id = drawSeriesRef.current.get(param.hoveredSeries as ISeriesApi<"Line">);
+        if (id) {
+          setDrawings((t) => ({
+            ...t,
+            [symbol]: (t[symbol] ?? []).filter((d) => d.id !== id),
+          }));
+          return;
+        }
+      }
+
+      if (param.time == null) return; // right margin — no bar to snap to
+      const time = param.time as number;
+      const add = (d: Omit<Drawing, "id" | "range">) => {
+        setDrawings((t) => ({
+          ...t,
+          [symbol]: [...(t[symbol] ?? []), { id: crypto.randomUUID(), range, ...d }],
+        }));
+        setDraft(null);
+        setTool(null);
+      };
+
+      if (tool === "hline") {
+        add({ kind: "hline", a: { time, price } });
+      } else if (!draft) {
+        setDraft({ time, price });
+      } else if (time !== draft.time) {
+        // anchors need two distinct bars
+        add({ kind: tool, a: draft, b: { time, price } });
+      }
+    };
+
+    chart.subscribeClick(onClick);
+    return () => chart.unsubscribeClick(onClick);
+  }, [tool, draft, symbol, range, themeTick]);
+
+  // drawing series follow state; persisted per symbol
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    for (const s of drawSeriesRef.current.keys()) {
+      try {
+        chart.removeSeries(s);
+      } catch {}
+    }
+    drawSeriesRef.current.clear();
+
+    const times = barsRef.current.map((b) => Math.floor(Date.parse(b.t) / 1000));
+    const { accent } = themeColors();
+    for (const d of (drawings[symbol] ?? []).filter((d) => d.range === range)) {
+      for (const seg of drawingSegments(d, times)) {
+        if (seg.pts.length < 2) continue;
+        const s = chart.addSeries(LineSeries, {
+          color: accent,
+          lineWidth: 1,
+          lineStyle: seg.dashed ? LineStyle.Dashed : LineStyle.Solid,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        });
+        s.setData(
+          seg.pts
+            .slice()
+            .sort((x, y) => x.time - y.time)
+            .map((p) => ({ time: p.time as UTCTimestamp, value: p.value }))
+        );
+        drawSeriesRef.current.set(s, d.id);
+      }
+    }
+
+    if (drawingsLoadedRef.current) {
+      localStorage.setItem(TL_KEY, JSON.stringify(drawings));
+    }
+  }, [drawings, symbol, range, themeTick, barsTick]);
+
+  // Escape backs out of drawing / closes the tool menu
+  useEffect(() => {
+    if (!tool && !menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setTool(null);
+        setDraft(null);
+        setMenuOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [tool, menuOpen]);
+
+  const symbolDrawings = (drawings[symbol] ?? []).filter((d) => d.range === range);
+  const clearDrawings = () =>
+    setDrawings((t) => ({
+      ...t,
+      [symbol]: (t[symbol] ?? []).filter((d) => d.range !== range),
+    }));
+  const activeTool = DRAW_TOOLS.find((t) => t.kind === tool);
 
   const stageAlertOp: "above" | "below" =
     pendingAlert && pendingAlert.price >= (last ?? lastBarRef.current?.close ?? 0)
@@ -358,6 +578,7 @@ export function CandleChart({ symbol }: { symbol: string }) {
           low: lb.l,
           close: lb.c,
         };
+        setBarsTick((t) => t + 1);
       } catch {
         /* transient fetch failure — next tick retries */
       }
@@ -446,7 +667,96 @@ export function CandleChart({ symbol }: { symbol: string }) {
               {ind.label}
             </button>
           ))}
+          <span style={{ position: "relative" }}>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                if (tool) {
+                  setTool(null);
+                  setDraft(null);
+                } else {
+                  setMenuOpen((o) => !o);
+                  setPendingAlert(null);
+                }
+              }}
+              aria-pressed={tool != null}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              style={{
+                fontSize: 9,
+                letterSpacing: "0.08em",
+                padding: "2px 7px",
+                color: tool || menuOpen ? "var(--accent)" : "var(--ink-faint)",
+                border: "1px solid",
+                borderColor: tool || menuOpen ? "var(--accent)" : "var(--line)",
+              }}
+            >
+              {activeTool ? `${activeTool.icon} ${activeTool.label}` : "✎ DRAW ▾"}
+            </button>
+            {menuOpen && !tool && (
+              <span
+                role="menu"
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 4px)",
+                  left: 0,
+                  zIndex: 20,
+                  display: "flex",
+                  flexDirection: "column",
+                  minWidth: 130,
+                  background: "var(--panel-raised)",
+                  border: "1px solid var(--line-bright)",
+                }}
+              >
+                {DRAW_TOOLS.map((t) => (
+                  <button
+                    key={t.kind}
+                    role="menuitem"
+                    className="btn btn-ghost"
+                    onClick={() => {
+                      setTool(t.kind);
+                      setMenuOpen(false);
+                    }}
+                    style={{
+                      fontSize: 9,
+                      letterSpacing: "0.08em",
+                      padding: "6px 10px",
+                      textAlign: "left",
+                      color: "var(--ink-dim)",
+                    }}
+                  >
+                    {t.icon} {t.label}
+                  </button>
+                ))}
+              </span>
+            )}
+          </span>
+          {symbolDrawings.length > 0 && (
+            <button
+              className="btn btn-ghost"
+              onClick={clearDrawings}
+              aria-label="Clear drawings"
+              style={{
+                fontSize: 9,
+                letterSpacing: "0.08em",
+                padding: "2px 7px",
+                color: "var(--ink-faint)",
+                border: "1px solid var(--line)",
+              }}
+            >
+              ✕ {symbolDrawings.length}
+            </button>
+          )}
         </span>
+        {tool && (
+          <span className="label" style={{ color: "var(--accent)" }}>
+            {activeTool?.clicks === 1
+              ? "click the price level — esc cancels"
+              : draft
+                ? "click the second point — esc cancels"
+                : "click the first point · click a drawing to remove it"}
+          </span>
+        )}
         <span style={{ flex: 1 }} />
         {/* crosshair OHLC readout — the chart's tooltip layer */}
         <span style={{ fontSize: 11, color: "var(--ink-dim)", minHeight: 16 }}>
