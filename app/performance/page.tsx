@@ -1,10 +1,20 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
+import ReactMarkdown from "react-markdown";
 import { usePoll } from "@/hooks/usePoll";
 import { Panel } from "@/components/Panel";
 import { EquityChart } from "@/components/EquityChart";
 import { Account, fmtUsd, fmtNum } from "@/lib/types";
+
+interface Note {
+  id: string;
+  date: string;
+  title: string;
+  content: string;
+  created: number;
+}
 
 interface SymbolStats {
   symbol: string;
@@ -68,10 +78,36 @@ export default function PerformancePage() {
   const { data: perf } = usePoll<Perf>("/api/performance", 30_000);
   const { data: account } = usePoll<Account>("/api/account", 30_000);
   const { data: trades } = usePoll<Trade[]>("/api/trades", 20_000);
+  const { data: notes, refresh: refreshNotes } = usePoll<Note[]>("/api/research", 60_000);
+  const [reviewing, setReviewing] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [freshReview, setFreshReview] = useState<Note | null>(null);
 
   const equity = account ? parseFloat(account.equity) : null;
   const dayPl = account ? parseFloat(account.equity) - parseFloat(account.last_equity) : null;
   const t = perf?.totals;
+
+  // freshest review wins: one generated this visit, else the journal's latest
+  const review =
+    freshReview ??
+    (notes ?? []).find((n) => n.title.startsWith("Trade review")) ??
+    null;
+
+  const runReview = async () => {
+    setReviewing(true);
+    setReviewError(null);
+    try {
+      const res = await fetch("/api/research/review", { method: "POST" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "review failed");
+      setFreshReview(body);
+      refreshNotes();
+    } catch (e) {
+      setReviewError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReviewing(false);
+    }
+  };
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: "20px 16px 60px" }}>
@@ -86,6 +122,19 @@ export default function PerformancePage() {
           </span>
         )}
         <span style={{ flex: 1 }} />
+        <button
+          className="btn"
+          onClick={runReview}
+          disabled={reviewing}
+          style={{
+            fontSize: 10,
+            padding: "4px 12px",
+            color: reviewing ? "var(--amber)" : "var(--accent)",
+            borderColor: reviewing ? "var(--amber)" : "var(--line-bright)",
+          }}
+        >
+          {reviewing ? "REVIEWING…" : "◈ AI REVIEW"}
+        </button>
         <Link href="/" className="label" style={{ color: "var(--accent)", textDecoration: "none" }}>
           ◂ back to terminal
         </Link>
@@ -107,6 +156,44 @@ export default function PerformancePage() {
       <div style={{ marginBottom: 12, display: "flex", flexDirection: "column" }}>
         <EquityChart />
       </div>
+
+      {(review || reviewing || reviewError) && (
+        <div style={{ marginBottom: 12, display: "flex", flexDirection: "column" }}>
+          <Panel
+            title="AI Trade Review"
+            right={
+              review ? (
+                <span className="label">
+                  {new Date(review.created).toLocaleString("en-US", {
+                    month: "short",
+                    day: "numeric",
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })}{" "}
+                  · also in the research journal
+                </span>
+              ) : undefined
+            }
+          >
+            {reviewError && (
+              <div className="label" style={{ padding: "10px 14px", color: "var(--down)" }} role="alert">
+                ✕ {reviewError}
+              </div>
+            )}
+            {reviewing && !review && (
+              <div className="label" style={{ padding: "10px 14px", color: "var(--amber)" }}>
+                grading your fills against the market context captured at fill time…{" "}
+                <span className="cursor-blink">▮</span>
+              </div>
+            )}
+            {review && (
+              <div className="chat-md" style={{ padding: "6px 16px 14px", fontSize: 12 }}>
+                <ReactMarkdown>{review.content}</ReactMarkdown>
+              </div>
+            )}
+          </Panel>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }} className="perf-split">
         <Panel title="By Symbol" right={<span className="label">{t?.roundTrips ?? 0} round-trips</span>}>
