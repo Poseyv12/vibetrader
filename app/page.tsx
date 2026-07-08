@@ -34,8 +34,24 @@ const LS_KEY = "vibetrader.watchlist.v2";
 const RESEARCH_H_KEY = "vibetrader.researchHeight";
 const TAB_KEY = "vibetrader.mainTab";
 const SYMBOL_KEY = "vibetrader.symbol";
+const PANELS_KEY = "vibetrader.panels";
 
 type MainTab = "research" | "news";
+
+/** Cockpit regions the rail can hide (wide layout only; the chart always stays). */
+const RAIL = [
+  { key: "feed", icon: "◈", label: "FEED", title: "Research / news column" },
+  { key: "book", icon: "▤", label: "BOOK", title: "Positions & orders" },
+  { key: "trade", icon: "⊞", label: "TRADE", title: "Account, ticket & alerts" },
+  { key: "watch", icon: "☰", label: "WATCH", title: "Watchlist & copilot" },
+] as const;
+type RailKey = (typeof RAIL)[number]["key"];
+const ALL_VISIBLE: Record<RailKey, boolean> = {
+  feed: true,
+  book: true,
+  trade: true,
+  watch: true,
+};
 
 export default function Home() {
   const [symbol, setSymbol] = useState("SPY");
@@ -45,6 +61,7 @@ export default function Home() {
   const [dragging, setDragging] = useState(false);
   const [mainTab, setMainTab] = useState<MainTab>("research");
   const [newsUnread, setNewsUnread] = useState(false);
+  const [panels, setPanels] = useState<Record<RailKey, boolean>>(ALL_VISIBLE);
 
   useEffect(() => {
     try {
@@ -61,8 +78,16 @@ export default function Home() {
     if (localStorage.getItem(TAB_KEY) === "news") setMainTab("news");
     const sym = localStorage.getItem(SYMBOL_KEY);
     if (sym && /^[A-Z0-9./]{1,12}$/.test(sym)) setSymbol(sym);
+    try {
+      const saved = JSON.parse(localStorage.getItem(PANELS_KEY) ?? "");
+      if (saved && typeof saved === "object") setPanels({ ...ALL_VISIBLE, ...saved });
+    } catch {}
     setHydrated(true);
   }, []);
+
+  useEffect(() => {
+    if (hydrated) localStorage.setItem(PANELS_KEY, JSON.stringify(panels));
+  }, [panels, hydrated]);
 
   useEffect(() => {
     if (hydrated) localStorage.setItem(TAB_KEY, mainTab);
@@ -126,15 +151,39 @@ export default function Home() {
 
   return (
     <StreamCtx.Provider value={stream}>
-    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+    <div className="app-root" style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
       <ToastHost />
       <div className="reveal">
         <Header />
         <TickerTape symbols={watchlist} />
       </div>
 
-      <main className="app-grid">
-        <div className="col-main">
+      <div className="app-row">
+        <nav className="panel-rail" aria-label="Toggle panels">
+          {RAIL.map((r) => (
+            <button
+              key={r.key}
+              className="rail-btn"
+              aria-pressed={panels[r.key]}
+              title={`${r.title} — click to ${panels[r.key] ? "hide" : "show"}`}
+              onClick={() => setPanels((p) => ({ ...p, [r.key]: !p[r.key] }))}
+            >
+              <span className="rail-icon" aria-hidden>{r.icon}</span>
+              <span className="rail-label">{r.label}</span>
+            </button>
+          ))}
+        </nav>
+
+      <main
+        className="app-grid"
+        {...(!panels.trade ? { "data-hide-side": "" } : {})}
+        {...(!panels.watch ? { "data-hide-side2": "" } : {})}
+      >
+        <div
+          className="col-main"
+          {...(!panels.feed ? { "data-hide-strip": "" } : {})}
+          {...(!panels.book ? { "data-hide-book": "" } : {})}
+        >
           <div
             className="reveal"
             style={{
@@ -154,6 +203,9 @@ export default function Home() {
             aria-orientation="horizontal"
             aria-label="Resize lower panel"
           />
+          {/* tabs + panels move to their own left column on wide screens
+              (display: contents at narrower widths keeps this wrapper inert) */}
+          <div className="strip-wrap">
           <div
             className="seg"
             role="tablist"
@@ -182,7 +234,7 @@ export default function Home() {
             </button>
           </div>
           <div
-            className="reveal"
+            className="strip-panels reveal"
             style={{
               animationDelay: "140ms",
               display: "flex",
@@ -214,7 +266,9 @@ export default function Home() {
               <NewsPanel symbol={symbol} />
             </div>
           </div>
-          <div className="split reveal" style={{ animationDelay: "160ms" }}>
+          </div>
+
+          <div className="col-book reveal" style={{ animationDelay: "160ms" }}>
             <PositionsTable onSelect={setSymbol} />
             <OrdersPanel />
           </div>
@@ -230,6 +284,9 @@ export default function Home() {
           <div className="reveal" style={{ animationDelay: "240ms" }}>
             <AlertsPanel symbol={symbol} />
           </div>
+        </div>
+
+        <div className="col-side2">
           <div className="reveal" style={{ animationDelay: "280ms", display: "flex", flex: 1, minHeight: 220 }}>
             <Watchlist
               symbols={watchlist}
@@ -244,6 +301,7 @@ export default function Home() {
           </div>
         </div>
       </main>
+      </div>
 
       <footer
         className="label"
