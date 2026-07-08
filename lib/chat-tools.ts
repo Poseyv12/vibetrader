@@ -1,5 +1,6 @@
 import { trading, data, crypto, beta, FEED, isCryptoSymbol } from "./alpaca";
 import { listAlerts } from "./alerts";
+import { computePerformance } from "./performance";
 import { computeTechnicals } from "./technicals";
 import { displaySymbol, Position, Order, Snapshot, Bar } from "./types";
 import type { LmTool } from "./llm";
@@ -155,6 +156,15 @@ export const CHAT_TOOLS: LmTool[] = [
     function: {
       name: "get_alerts",
       description: "Configured price alerts and whether they have triggered",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_performance",
+      description:
+        "Realized trading performance computed FIFO from the account's fill history: totals (realized P/L, win rate, round-trips, volume) plus per-symbol stats. Use for 'how am I doing' / 'review my trading' questions.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -359,6 +369,14 @@ export async function runChatTool(name: string, args: Record<string, unknown>): 
         condition: `${a.op} ${a.price}`,
         triggered: a.triggered ? `yes, at ${a.triggered.price}` : "no",
       }));
+    case "get_performance": {
+      const perf = await computePerformance();
+      return {
+        totals: perf.totals,
+        by_symbol: perf.bySymbol.slice(0, 10),
+        since: perf.oldestFill,
+      };
+    }
     default:
       throw new Error(`unknown tool: ${name}`);
   }
