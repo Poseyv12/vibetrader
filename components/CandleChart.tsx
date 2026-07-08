@@ -88,6 +88,59 @@ interface ChartAlert {
   triggered?: { price: number; at: number };
 }
 
+// what /api/technicals returns (server-computed from daily bars)
+interface TechStats {
+  price?: number;
+  change_pct_5d?: number | null;
+  change_pct_20d?: number | null;
+  price_vs_sma20_pct?: number | null;
+  price_vs_sma50_pct?: number | null;
+  price_vs_sma200_pct?: number | null;
+  rsi14?: number | null;
+  realized_vol_30d_annualized_pct?: number | null;
+  high_52wk?: number;
+  low_52wk?: number;
+  pct_below_52wk_high?: number;
+  error?: string;
+}
+
+/** 42_312_000 → "42.3M" */
+const fmtVol = (v: number) =>
+  v >= 1e9 ? `${(v / 1e9).toFixed(1)}B` : v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(1)}K` : String(Math.round(v));
+
+const signPct = (n: number) => `${n >= 0 ? "+" : ""}${n}%`;
+
+function Stat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: React.ReactNode;
+  tone?: "up" | "down" | "amber";
+}) {
+  return (
+    <span style={{ display: "inline-flex", gap: 5, alignItems: "baseline", whiteSpace: "nowrap" }}>
+      <span className="label">{label}</span>
+      <span
+        style={{
+          fontSize: 11,
+          color:
+            tone === "up"
+              ? "var(--up)"
+              : tone === "down"
+                ? "var(--down)"
+                : tone === "amber"
+                  ? "var(--amber)"
+                  : "var(--ink-dim)",
+        }}
+      >
+        {value}
+      </span>
+    </span>
+  );
+}
+
 // client-safe mirror of lib/trade-log.ts TradeLogEntry
 interface ChartFill {
   id: string;
@@ -238,6 +291,10 @@ export function CandleChart({ symbol }: { symbol: string }) {
   const { data: positions } = usePoll<Position[]>("/api/positions", 10_000);
   const { data: alerts, refresh: refreshAlerts } = usePoll<ChartAlert[]>("/api/alerts", 30_000);
   const { data: trades } = usePoll<ChartFill[]>("/api/trades", 30_000);
+  const { data: tech } = usePoll<TechStats>(
+    `/api/technicals?symbol=${encodeURIComponent(symbol)}`,
+    60_000
+  );
   const priceLinesRef = useRef<IPriceLine[]>([]);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const { prices: livePrices } = useStream();
@@ -921,6 +978,83 @@ export function CandleChart({ symbol }: { symbol: string }) {
           )}
         </span>
       </div>
+
+      {(() => {
+        const day = snap?.[symbol]?.dailyBar;
+        const prevClose = snap?.[symbol]?.prevDailyBar?.c;
+        const t = tech && !tech.error ? tech : null;
+        if (!day && !t) return null;
+        return (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "4px 14px",
+              padding: "0 12px 8px",
+              borderBottom: "1px solid var(--line)",
+            }}
+          >
+            {day && (
+              <>
+                <Stat label="O" value={fmtNum(day.o)} />
+                <Stat label="H" value={fmtNum(day.h)} />
+                <Stat label="L" value={fmtNum(day.l)} />
+                <Stat label="VOL" value={fmtVol(day.v)} />
+              </>
+            )}
+            {prevClose != null && <Stat label="PREV" value={fmtNum(prevClose)} />}
+            {t?.rsi14 != null && (
+              <Stat
+                label="RSI14"
+                value={t.rsi14}
+                tone={t.rsi14 >= 70 || t.rsi14 <= 30 ? "amber" : undefined}
+              />
+            )}
+            {t?.price_vs_sma20_pct != null && (
+              <Stat
+                label="SMA20"
+                value={signPct(t.price_vs_sma20_pct)}
+                tone={t.price_vs_sma20_pct >= 0 ? "up" : "down"}
+              />
+            )}
+            {t?.price_vs_sma50_pct != null && (
+              <Stat
+                label="SMA50"
+                value={signPct(t.price_vs_sma50_pct)}
+                tone={t.price_vs_sma50_pct >= 0 ? "up" : "down"}
+              />
+            )}
+            {t?.change_pct_5d != null && (
+              <Stat
+                label="5D"
+                value={signPct(t.change_pct_5d)}
+                tone={t.change_pct_5d >= 0 ? "up" : "down"}
+              />
+            )}
+            {t?.change_pct_20d != null && (
+              <Stat
+                label="20D"
+                value={signPct(t.change_pct_20d)}
+                tone={t.change_pct_20d >= 0 ? "up" : "down"}
+              />
+            )}
+            {t?.realized_vol_30d_annualized_pct != null && (
+              <Stat label="VOL30" value={`${t.realized_vol_30d_annualized_pct}%`} />
+            )}
+            {t?.high_52wk != null && t?.low_52wk != null && (
+              <Stat label="52W" value={`${fmtNum(t.low_52wk)}–${fmtNum(t.high_52wk)}`} />
+            )}
+            {t?.pct_below_52wk_high != null && (
+              <Stat
+                label="OFF HI"
+                value={`−${t.pct_below_52wk_high}%`}
+                tone={t.pct_below_52wk_high <= 5 ? "up" : undefined}
+              />
+            )}
+          </div>
+        );
+      })()}
+
       <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
         <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
         {pendingAlert && (
