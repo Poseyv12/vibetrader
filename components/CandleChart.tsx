@@ -18,7 +18,7 @@ import {
   type MouseEventParams,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { Bar, Position, Snapshot, displaySymbol, snapPrice, fmtNum, priceDigits } from "@/lib/types";
+import { Bar, Order, Position, Snapshot, displaySymbol, snapPrice, fmtNum, priceDigits } from "@/lib/types";
 import { hexToRgba } from "@/lib/theme-client";
 import { usePoll } from "@/hooks/usePoll";
 import { useStream } from "@/hooks/useStream";
@@ -46,6 +46,35 @@ const TIMEFRAMES = [
 ] as const;
 type Tf = (typeof TIMEFRAMES)[number]["id"];
 const TF_KEY = "vibetrader.chartTf";
+
+/** seconds per bar, for the next-bar countdown */
+const TF_SECONDS: Record<string, number> = {
+  "1Min": 60,
+  "5Min": 300,
+  "10Min": 600,
+  "15Min": 900,
+  "30Min": 1800,
+  "1Hour": 3600,
+  "3Hour": 10800,
+  "1Day": 86400,
+  "1Week": 604800,
+};
+/** what AUTO resolves to per range (mirrors the server presets) */
+const AUTO_TF: Record<Range, string> = {
+  "1D": "5Min",
+  "1W": "30Min",
+  "1M": "1Day",
+  "3M": "1Day",
+  "1Y": "1Day",
+  "5Y": "1Week",
+};
+
+const fmtCountdown = (s: number) => {
+  if (s >= 86400) return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
+  if (s >= 3600)
+    return `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+};
 
 // validated defaults — dataviz six checks vs #0b0f0e; theme can override
 const UP = "#26a69a";
@@ -173,6 +202,31 @@ interface ChartFill {
 }
 
 const FILLS_KEY = "vibetrader.showFills";
+
+/** Chart lines the user can grab: the entry (stages a TP/SL) or a working order (re-prices it). */
+type DragTarget =
+  | { kind: "entry"; price: number; posSide: "long" | "short"; qty: number; rawSymbol: string }
+  | { kind: "order"; id: string; price: number; field: "limit_price" | "stop_price"; label: string };
+
+/**
+ * A line interaction awaiting confirmation; nothing transmits until the
+ * button. Drags stage tp/sl/move; a plain click on the entry line offers
+ * close-out, on an order line offers cancel.
+ */
+interface PendingExit {
+  kind: "tp" | "sl" | "move" | "close" | "cancel";
+  price: number;
+  x: number;
+  y: number;
+  label: string;
+  exitSide?: "buy" | "sell";
+  qty?: number;
+  orderId?: string;
+  field?: "limit_price" | "stop_price";
+  rawSymbol?: string;
+  error?: string;
+  busy?: boolean;
+}
 
 /**
  * Drawings are rendered as LineSeries, so they pan/zoom with the chart for
@@ -320,15 +374,48 @@ export function CandleChart({ symbol }: { symbol: string }) {
   const { data: positions } = usePoll<Position[]>("/api/positions", 10_000);
   const { data: alerts, refresh: refreshAlerts } = usePoll<ChartAlert[]>("/api/alerts", 30_000);
   const { data: trades } = usePoll<ChartFill[]>("/api/trades", 30_000);
+  const { data: openOrders } = usePoll<Order[]>("/api/orders?status=open", 15_000);
   const { data: tech } = usePoll<TechStats>(
     `/api/technicals?symbol=${encodeURIComponent(symbol)}`,
     60_000
   );
+  const dragTargetsRef = useRef<DragTarget[]>([]);
+  const dragRef = useRef<{ target: DragTarget; ghost: IPriceLine; moved: boolean } | null>(null);
+  const suppressClickRef = useRef(false);
+  const toolRef = useRef<DrawKind | null>(null);
+  const [pendingExit, setPendingExit] = useState<PendingExit | null>(null);
+  const [nextBarIn, setNextBarIn] = useState("");
+  // bumped ~2.5s after a bar boundary passes so the tail refresh fires right
+  // then (Alpaca needs a beat to finalize the closed bar) instead of waiting
+  // out the fixed 60s poll
+  const [barBoundaryTick, setBarBoundaryTick] = useState(0);
+
+  // countdown to the next bar boundary for the active resolution
+  useEffect(() => {
+    const interval = TF_SECONDS[tf === "auto" ? AUTO_TF[range] : tf] ?? 86400;
+    let lastBucket = Math.floor(Date.now() / 1000 / interval);
+    const tick = () => {
+      const now = Date.now() / 1000;
+      const bucket = Math.floor(now / interval);
+      if (bucket !== lastBucket) {
+        lastBucket = bucket;
+        setTimeout(() => setBarBoundaryTick((t) => t + 1), 2500);
+      }
+      const next = (bucket + 1) * interval;
+      setNextBarIn(fmtCountdown(Math.max(0, Math.round(next - now))));
+    };
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, [tf, range]);
   const priceLinesRef = useRef<IPriceLine[]>([]);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const { prices: livePrices } = useStream();
   const livePrice = livePrices[symbol]?.p;
   const { price: last, chg } = snapPrice(snap?.[symbol], livePrice);
+  // freshest tick for the tail refresh, which runs in a closure with stale props
+  const livePriceRef = useRef<number | undefined>(undefined);
+  livePriceRef.current = livePrice;
   // last candle bookkeeping for live streaming updates
   const lastBarRef = useRef<{
     time: UTCTimestamp;
@@ -427,6 +514,7 @@ export function CandleChart({ symbol }: { symbol: string }) {
     setLoading(true);
     setEmpty(false);
     setPendingAlert(null);
+    setPendingExit(null);
     setDraft(null); // a half-drawn line belongs to the previous symbol/range
     lastBarRef.current = null;
     loadedSymbolRef.current = null;
@@ -535,6 +623,7 @@ export function CandleChart({ symbol }: { symbol: string }) {
     if (!chart || !candles) return;
 
     const onClick = (param: MouseEventParams) => {
+      if (suppressClickRef.current) return; // a line drag just ended here
       if (!param.point) return;
       const price = candles.coordinateToPrice(param.point.y);
       if (price == null || price <= 0) return;
@@ -625,7 +714,9 @@ export function CandleChart({ symbol }: { symbol: string }) {
     }
   }, [drawings, symbol, range, tf, themeTick, barsTick]);
 
-  // position entry + live alert levels as labeled price lines
+  // position entry, working orders, and alert levels as labeled price lines.
+  // Entry + order lines are drag targets: dragging from the entry stages a
+  // TP/SL, dragging an order line re-prices it — both behind a confirm card.
   useEffect(() => {
     const candles = candlesRef.current;
     if (!candles) return;
@@ -635,8 +726,9 @@ export function CandleChart({ symbol }: { symbol: string }) {
       } catch {}
     }
     priceLinesRef.current = [];
+    const targets: DragTarget[] = [];
 
-    const { up, down, amber } = themeColors();
+    const { up, down, amber, accent } = themeColors();
     const pos = (positions ?? []).find((p) => displaySymbol(p) === symbol);
     if (pos) {
       const entry = parseFloat(pos.avg_entry_price);
@@ -649,11 +741,53 @@ export function CandleChart({ symbol }: { symbol: string }) {
             lineWidth: 1,
             lineStyle: LineStyle.Dashed,
             axisLabelVisible: true,
-            title: `${pos.side} ${fmtNum(Math.abs(qty))}`,
+            title: `${pos.side} ${fmtNum(Math.abs(qty))} ⇕`,
           })
         );
+        targets.push({
+          kind: "entry",
+          price: entry,
+          posSide: pos.side,
+          qty: Math.abs(qty),
+          rawSymbol: pos.symbol,
+        });
       }
     }
+
+    const slashless = symbol.replace("/", "");
+    const working = (openOrders ?? []).filter(
+      (o) =>
+        (o.symbol === symbol || o.symbol === slashless) &&
+        ["new", "accepted", "held", "partially_filled"].includes(o.status)
+    );
+    for (const o of working) {
+      const isStop = o.type.includes("stop");
+      const price = parseFloat((isStop ? o.stop_price : o.limit_price) ?? "");
+      if (!(price > 0)) continue;
+      const buy = o.side === "buy";
+      const label = `${buy ? "▲" : "▼"} ${isStop ? "STP" : "LMT"}${o.qty ? ` ${fmtNum(parseFloat(o.qty))}` : ""} ⇕`;
+      priceLinesRef.current.push(
+        candles.createPriceLine({
+          price,
+          color: isStop ? down : buy ? accent : up,
+          lineWidth: 1,
+          lineStyle: LineStyle.LargeDashed,
+          axisLabelVisible: true,
+          title: label,
+        })
+      );
+      // trailing stops track the market — their stop_price can't be PATCHed
+      if (o.type !== "trailing_stop") {
+        targets.push({
+          kind: "order",
+          id: o.id,
+          price,
+          field: isStop ? "stop_price" : "limit_price",
+          label: `${buy ? "buy" : "sell"} ${isStop ? "stop" : "limit"}`,
+        });
+      }
+    }
+
     for (const a of (alerts ?? []).filter((a) => a.symbol === symbol && !a.triggered)) {
       priceLinesRef.current.push(
         candles.createPriceLine({
@@ -666,7 +800,161 @@ export function CandleChart({ symbol }: { symbol: string }) {
         })
       );
     }
-  }, [positions, alerts, symbol, themeTick]);
+
+    dragTargetsRef.current = targets;
+  }, [positions, alerts, openOrders, symbol, themeTick]);
+
+  useEffect(() => {
+    toolRef.current = tool;
+  }, [tool]);
+
+  // grab-and-drag on entry/order lines. Capture-phase pointerdown beats the
+  // chart's pan handler; a ghost line tracks the cursor; release opens the
+  // confirm card. Plain clicks (alerts, drawing) are untouched.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const HIT = 6;
+
+    const yToPrice = (clientY: number) => {
+      const rect = el.getBoundingClientRect();
+      const p = candlesRef.current?.coordinateToPrice(clientY - rect.top);
+      return p != null && p > 0 ? p : null;
+    };
+    const findTarget = (clientY: number) => {
+      const candles = candlesRef.current;
+      if (!candles) return null;
+      const rect = el.getBoundingClientRect();
+      const y = clientY - rect.top;
+      for (const t of dragTargetsRef.current) {
+        const ty = candles.priceToCoordinate(t.price);
+        if (ty != null && Math.abs(ty - y) <= HIT) return t;
+      }
+      return null;
+    };
+
+    const onMove = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const p = yToPrice(e.clientY);
+      if (p == null) return;
+      d.moved = true;
+      d.ghost.applyOptions({ price: p });
+    };
+
+    const onUp = (e: PointerEvent) => {
+      const d = dragRef.current;
+      dragRef.current = null;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      el.style.cursor = "";
+      if (!d) return;
+      try {
+        candlesRef.current?.removePriceLine(d.ghost);
+      } catch {}
+      const price = yToPrice(e.clientY);
+      // the release also fires a chart click — don't let it stage an alert
+      suppressClickRef.current = true;
+      setTimeout(() => (suppressClickRef.current = false), 250);
+
+      const rect = el.getBoundingClientRect();
+      const x = Math.max(8, Math.min(e.clientX - rect.left, rect.width - 240));
+      const y = Math.max(4, e.clientY - rect.top - 18);
+
+      // a plain click (no drag) offers close-out / cancel for the line
+      if (!d.moved) {
+        if (d.target.kind === "entry") {
+          setPendingExit({
+            kind: "close",
+            price: d.target.price,
+            x,
+            y,
+            rawSymbol: d.target.rawSymbol,
+            label: `close ${d.target.posSide} ${fmtNum(d.target.qty)} @ market — entire position`,
+          });
+        } else {
+          setPendingExit({
+            kind: "cancel",
+            price: d.target.price,
+            x,
+            y,
+            orderId: d.target.id,
+            label: `cancel ${d.target.label}`,
+          });
+        }
+        return;
+      }
+      if (price == null) return;
+
+      if (d.target.kind === "order") {
+        setPendingExit({
+          kind: "move",
+          price,
+          x,
+          y,
+          orderId: d.target.id,
+          field: d.target.field,
+          label: `move ${d.target.label}`,
+        });
+        return;
+      }
+      const { price: entry, posSide, qty } = d.target;
+      const long = posSide === "long";
+      const isTp = long ? price > entry : price < entry;
+      const exitSide = long ? "sell" : "buy";
+      const crypto = symbol.includes("/");
+      // equities stops need whole shares; TPs (limit) and crypto stay fractional
+      const exitQty = isTp || crypto ? qty : Math.floor(qty);
+      setPendingExit({
+        kind: isTp ? "tp" : "sl",
+        price,
+        x,
+        y,
+        exitSide,
+        qty: exitQty,
+        label: `${isTp ? "take profit" : "stop loss"} · ${exitSide} ${fmtNum(exitQty)}`,
+        ...(exitQty <= 0 ? { error: "stops need at least 1 whole share" } : {}),
+      });
+    };
+
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 0 || toolRef.current) return; // draw mode keeps its clicks
+      const target = findTarget(e.clientY);
+      if (!target || !candlesRef.current) return;
+      e.preventDefault();
+      e.stopPropagation(); // keep the chart from starting a pan
+      const { amber } = themeColors();
+      const ghost = candlesRef.current.createPriceLine({
+        price: target.price,
+        color: amber,
+        lineWidth: 1,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: true,
+        title: target.kind === "entry" ? "exit @" : "move to",
+      });
+      dragRef.current = { target, ghost, moved: false };
+      setPendingExit(null);
+      el.style.cursor = "ns-resize";
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    };
+
+    // resize cursor when hovering a grabbable line
+    const onHover = (e: PointerEvent) => {
+      if (dragRef.current || toolRef.current) return;
+      el.style.cursor = findTarget(e.clientY) ? "ns-resize" : "";
+    };
+
+    el.addEventListener("pointerdown", onDown, true);
+    el.addEventListener("pointermove", onHover);
+    return () => {
+      el.removeEventListener("pointerdown", onDown, true);
+      el.removeEventListener("pointermove", onHover);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      el.style.cursor = "";
+    };
+  }, [symbol]);
 
   // a triggered alert should drop off the chart right away
   useEffect(() => {
@@ -748,6 +1036,77 @@ export function CandleChart({ symbol }: { symbol: string }) {
       ? "above"
       : "below";
 
+  /** Keep confirm cards fully inside the chart area (popups were getting clipped at the edges). */
+  const clampPop = (x: number, y: number, w: number, h: number) => {
+    const cw = containerRef.current?.clientWidth ?? 800;
+    const ch = containerRef.current?.clientHeight ?? 360;
+    return {
+      left: Math.max(8, Math.min(x, cw - w)),
+      top: Math.max(4, Math.min(y, ch - h)),
+    };
+  };
+
+  // a dragged line was released — transmit only on SET
+  const confirmExit = async () => {
+    const p = pendingExit;
+    if (!p || p.error || p.busy) return;
+    setPendingExit({ ...p, busy: true });
+    const digits = priceDigits(p.price);
+    const px = parseFloat(p.price.toFixed(digits));
+    try {
+      let res: Response;
+      if (p.kind === "close") {
+        res = await fetch(`/api/positions/${encodeURIComponent(p.rawSymbol!)}`, {
+          method: "DELETE",
+        });
+      } else if (p.kind === "cancel") {
+        res = await fetch(`/api/orders/${p.orderId}`, { method: "DELETE" });
+      } else if (p.kind === "move") {
+        res = await fetch(`/api/orders/${p.orderId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [p.field!]: px }),
+        });
+      } else {
+        const crypto = symbol.includes("/");
+        const body =
+          p.kind === "tp"
+            ? { symbol, side: p.exitSide, type: "limit", qty: p.qty, limit_price: px }
+            : crypto
+              ? {
+                  symbol,
+                  side: p.exitSide,
+                  type: "stop_limit",
+                  qty: p.qty,
+                  stop_price: px,
+                  // crypto has no plain stop — give the stop-limit slippage room
+                  limit_price: parseFloat(
+                    (p.exitSide === "sell" ? px * 0.995 : px * 1.005).toFixed(digits)
+                  ),
+                }
+              : { symbol, side: p.exitSide, type: "stop", qty: p.qty, stop_price: px };
+        res = await fetch("/api/orders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      }
+      const bodyJson = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(bodyJson.error ?? "rejected");
+      setPendingExit(null);
+      window.dispatchEvent(new Event("vt:refresh"));
+    } catch (e) {
+      const text = e instanceof Error ? e.message : String(e);
+      const m = text.match(/"message"\s*:\s*"([^"]+)"/);
+      const msg = /accepted status/i.test(text)
+        ? "order is queued (market closed) — Alpaca only re-prices working orders; try after the open or cancel + recreate"
+        : m
+          ? m[1]
+          : text.slice(0, 120);
+      setPendingExit({ ...p, busy: false, error: msg });
+    }
+  };
+
   const stageAlert = async () => {
     if (!pendingAlert) return;
     const digits = priceDigits(pendingAlert.price);
@@ -765,9 +1124,10 @@ export function CandleChart({ symbol }: { symbol: string }) {
   };
 
   // tail refresh — new bars come from the server (it owns bar boundaries),
-  // so fresh candles append without reloading the chart or disturbing the view
+  // so fresh candles append without reloading the chart or disturbing the view.
+  // Runs on a 60s interval AND immediately after each bar boundary passes.
   useEffect(() => {
-    const id = setInterval(async () => {
+    const refresh = async () => {
       if (document.hidden || loadedSymbolRef.current !== symbol) return;
       const candles = candlesRef.current;
       const volume = volumeRef.current;
@@ -803,20 +1163,36 @@ export function CandleChart({ symbol }: { symbol: string }) {
           smaSeriesRef.current[ind.key]?.setData(smaData(barsRef.current, ind.period));
         }
         const lb = tail[tail.length - 1];
-        lastBarRef.current = {
+        let newest = {
           time: Math.floor(Date.parse(lb.t) / 1000) as UTCTimestamp,
           open: lb.o,
           high: lb.h,
           low: lb.l,
           close: lb.c,
         };
+        // the server bar can trail the live stream by a few ticks — never let
+        // the true-up step the candle backwards from the freshest price
+        const live = livePriceRef.current;
+        if (live != null) {
+          newest = {
+            ...newest,
+            close: live,
+            high: Math.max(newest.high, live),
+            low: Math.min(newest.low, live),
+          };
+          candles.update(newest);
+        }
+        lastBarRef.current = newest;
         setBarsTick((t) => t + 1);
       } catch {
         /* transient fetch failure — next tick retries */
       }
-    }, 60_000);
+    };
+
+    if (barBoundaryTick > 0) refresh(); // a bar just closed — fetch it now
+    const id = setInterval(refresh, 60_000);
     return () => clearInterval(id);
-  }, [symbol, range, tf, themeTick]);
+  }, [symbol, range, tf, themeTick, barBoundaryTick]);
 
   // stream ticks move the last candle in place
   useEffect(() => {
@@ -1028,6 +1404,13 @@ export function CandleChart({ symbol }: { symbol: string }) {
           </span>
         )}
         <span style={{ flex: 1 }} />
+        <span
+          className="label"
+          title="time to the next bar boundary — the chart trues up from the server every 60s"
+          style={{ whiteSpace: "nowrap", color: "var(--ink-dim)" }}
+        >
+          ◷ next bar {nextBarIn}
+        </span>
         {/* crosshair OHLC readout — the chart's tooltip layer */}
         <span style={{ fontSize: 11, color: "var(--ink-dim)", minHeight: 16 }}>
           {hover ? (
@@ -1121,12 +1504,82 @@ export function CandleChart({ symbol }: { symbol: string }) {
 
       <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
         <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
+        {pendingExit && (
+          <div
+            style={{
+              position: "absolute",
+              ...clampPop(pendingExit.x, pendingExit.y, 320, pendingExit.error ? 96 : 48),
+              zIndex: 10,
+              background: "var(--panel-raised)",
+              border: `1px solid ${
+                pendingExit.kind === "tp"
+                  ? "var(--up)"
+                  : pendingExit.kind === "move"
+                    ? "var(--accent)"
+                    : "var(--down)"
+              }`,
+              padding: "7px 10px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              fontSize: 12,
+              whiteSpace: "nowrap",
+            }}
+          >
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <span
+                className="label"
+                style={{
+                  color:
+                    pendingExit.kind === "tp"
+                      ? "var(--up)"
+                      : pendingExit.kind === "move"
+                        ? "var(--accent)"
+                        : "var(--down)",
+                }}
+              >
+                {pendingExit.label}
+              </span>
+              {pendingExit.kind !== "close" && pendingExit.kind !== "cancel" && (
+                <span>@ {fmtNum(pendingExit.price)}</span>
+              )}
+              <button
+                className="btn"
+                style={{ fontSize: 9, padding: "3px 10px" }}
+                disabled={!!pendingExit.error || pendingExit.busy}
+                onClick={confirmExit}
+              >
+                {pendingExit.busy
+                  ? "…"
+                  : pendingExit.kind === "move"
+                    ? "MOVE"
+                    : pendingExit.kind === "close"
+                      ? "CLOSE"
+                      : pendingExit.kind === "cancel"
+                        ? "CANCEL ORDER"
+                        : "SET"}
+              </button>
+              <button
+                className="btn btn-ghost"
+                style={{ fontSize: 10, color: "var(--ink-faint)" }}
+                onClick={() => setPendingExit(null)}
+                aria-label="Cancel"
+              >
+                ✕
+              </button>
+            </div>
+            {pendingExit.error && (
+              <span className="label" style={{ color: "var(--down)", whiteSpace: "normal", maxWidth: 260 }}>
+                ✕ {pendingExit.error}
+              </span>
+            )}
+          </div>
+        )}
         {pendingAlert && (
           <div
             style={{
               position: "absolute",
-              left: Math.min(pendingAlert.x + 12, 9999),
-              top: Math.max(pendingAlert.y - 18, 4),
+              ...clampPop(pendingAlert.x + 12, pendingAlert.y - 18, 250, 44),
               zIndex: 10,
               background: "var(--panel-raised)",
               border: "1px solid var(--accent)",
