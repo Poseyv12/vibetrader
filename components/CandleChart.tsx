@@ -24,8 +24,28 @@ import { usePoll } from "@/hooks/usePoll";
 import { useStream } from "@/hooks/useStream";
 import { Panel } from "./Panel";
 
-const RANGES = ["1D", "1W", "1M", "3M", "1Y"] as const;
+const RANGES = ["1D", "1W", "1M", "3M", "1Y", "5Y"] as const;
 type Range = (typeof RANGES)[number];
+
+/**
+ * Bar resolutions the picker offers. AUTO keeps the per-range presets.
+ * The server clamps the lookback window per timeframe so responses stay
+ * under Alpaca's 10k-bars cap (e.g. 1m ≈ 6 days, 5m ≈ 30 days).
+ */
+const TIMEFRAMES = [
+  { id: "auto", label: "AUTO" },
+  { id: "1Min", label: "1m" },
+  { id: "5Min", label: "5m" },
+  { id: "10Min", label: "10m" },
+  { id: "15Min", label: "15m" },
+  { id: "30Min", label: "30m" },
+  { id: "1Hour", label: "1h" },
+  { id: "3Hour", label: "3h" },
+  { id: "1Day", label: "1D" },
+  { id: "1Week", label: "1W" },
+] as const;
+type Tf = (typeof TIMEFRAMES)[number]["id"];
+const TF_KEY = "vibetrader.chartTf";
 
 // validated defaults — dataviz six checks vs #0b0f0e; theme can override
 const UP = "#26a69a";
@@ -173,6 +193,8 @@ interface Drawing {
   id: string;
   kind: DrawKind;
   range: Range;
+  /** bar resolution the drawing was made on — endpoints snap to those bar times */
+  tf?: Tf;
   a: { time: number; price: number };
   b?: { time: number; price: number };
 }
@@ -241,6 +263,7 @@ export function CandleChart({ symbol }: { symbol: string }) {
   const candlesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const [range, setRange] = useState<Range>("3M");
+  const [tf, setTf] = useState<Tf>("auto");
   const [hover, setHover] = useState<Ohlc | null>(null);
   const [loading, setLoading] = useState(true);
   const [empty, setEmpty] = useState(false);
@@ -278,11 +301,17 @@ export function CandleChart({ symbol }: { symbol: string }) {
       if (saved && typeof saved === "object") setInds((d) => ({ ...d, ...saved }));
     } catch {}
     if (localStorage.getItem(FILLS_KEY) === "0") setShowFills(false);
+    const savedTf = localStorage.getItem(TF_KEY);
+    if (savedTf && TIMEFRAMES.some((t) => t.id === savedTf)) setTf(savedTf as Tf);
   }, []);
 
   useEffect(() => {
     localStorage.setItem(FILLS_KEY, showFills ? "1" : "0");
   }, [showFills]);
+
+  useEffect(() => {
+    localStorage.setItem(TF_KEY, tf);
+  }, [tf]);
 
   const { data: snap } = usePoll<Record<string, Snapshot>>(
     `/api/snapshots?symbols=${encodeURIComponent(symbol)}`,
@@ -404,7 +433,9 @@ export function CandleChart({ symbol }: { symbol: string }) {
 
     (async () => {
       try {
-        const res = await fetch(`/api/bars?symbol=${encodeURIComponent(symbol)}&range=${range}`);
+        const res = await fetch(
+          `/api/bars?symbol=${encodeURIComponent(symbol)}&range=${range}${tf !== "auto" ? `&timeframe=${tf}` : ""}`
+        );
         const body = await res.json();
         if (cancelled || !candlesRef.current || !volumeRef.current) return;
 
@@ -471,7 +502,7 @@ export function CandleChart({ symbol }: { symbol: string }) {
     return () => {
       cancelled = true;
     };
-  }, [symbol, range, themeTick]);
+  }, [symbol, range, tf, themeTick]);
 
   // indicator visibility follows the toggles (persisted)
   useEffect(() => {
@@ -531,7 +562,7 @@ export function CandleChart({ symbol }: { symbol: string }) {
       const add = (d: Omit<Drawing, "id" | "range">) => {
         setDrawings((t) => ({
           ...t,
-          [symbol]: [...(t[symbol] ?? []), { id: crypto.randomUUID(), range, ...d }],
+          [symbol]: [...(t[symbol] ?? []), { id: crypto.randomUUID(), range, tf, ...d }],
         }));
         setDraft(null);
         setTool(null);
@@ -549,7 +580,7 @@ export function CandleChart({ symbol }: { symbol: string }) {
 
     chart.subscribeClick(onClick);
     return () => chart.unsubscribeClick(onClick);
-  }, [tool, draft, symbol, range, themeTick]);
+  }, [tool, draft, symbol, range, tf, themeTick]);
 
   // drawing series follow state; persisted per symbol
   useEffect(() => {
@@ -564,7 +595,11 @@ export function CandleChart({ symbol }: { symbol: string }) {
 
     const times = barsRef.current.map((b) => Math.floor(Date.parse(b.t) / 1000));
     const { accent } = themeColors();
-    for (const d of (drawings[symbol] ?? []).filter((d) => d.range === range)) {
+    // drawings only render on the resolution they were made on — their bar
+    // times don't exist on other timeframes and would distort the time scale
+    for (const d of (drawings[symbol] ?? []).filter(
+      (d) => d.range === range && (d.tf ?? "auto") === tf
+    )) {
       for (const seg of drawingSegments(d, times)) {
         if (seg.pts.length < 2) continue;
         const s = chart.addSeries(LineSeries, {
@@ -588,7 +623,7 @@ export function CandleChart({ symbol }: { symbol: string }) {
     if (drawingsLoadedRef.current) {
       localStorage.setItem(TL_KEY, JSON.stringify(drawings));
     }
-  }, [drawings, symbol, range, themeTick, barsTick]);
+  }, [drawings, symbol, range, tf, themeTick, barsTick]);
 
   // position entry + live alert levels as labeled price lines
   useEffect(() => {
@@ -696,11 +731,15 @@ export function CandleChart({ symbol }: { symbol: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [tool, menuOpen]);
 
-  const symbolDrawings = (drawings[symbol] ?? []).filter((d) => d.range === range);
+  const symbolDrawings = (drawings[symbol] ?? []).filter(
+    (d) => d.range === range && (d.tf ?? "auto") === tf
+  );
   const clearDrawings = () =>
     setDrawings((t) => ({
       ...t,
-      [symbol]: (t[symbol] ?? []).filter((d) => d.range !== range),
+      [symbol]: (t[symbol] ?? []).filter(
+        (d) => !(d.range === range && (d.tf ?? "auto") === tf)
+      ),
     }));
   const activeTool = DRAW_TOOLS.find((t) => t.kind === tool);
 
@@ -735,7 +774,9 @@ export function CandleChart({ symbol }: { symbol: string }) {
       const lastLoaded = lastBarRef.current;
       if (!candles || !volume || !lastLoaded) return;
       try {
-        const res = await fetch(`/api/bars?symbol=${encodeURIComponent(symbol)}&range=${range}`);
+        const res = await fetch(
+          `/api/bars?symbol=${encodeURIComponent(symbol)}&range=${range}${tf !== "auto" ? `&timeframe=${tf}` : ""}`
+        );
         const body = await res.json();
         const fresh: Bar[] = body.bars ?? [];
         // bars from the last known candle onward: first replaces it, rest append
@@ -775,7 +816,7 @@ export function CandleChart({ symbol }: { symbol: string }) {
       }
     }, 60_000);
     return () => clearInterval(id);
-  }, [symbol, range, themeTick]);
+  }, [symbol, range, tf, themeTick]);
 
   // stream ticks move the last candle in place
   useEffect(() => {
@@ -803,7 +844,30 @@ export function CandleChart({ symbol }: { symbol: string }) {
     <Panel
       title={`Chart // ${symbol}`}
       right={
-        <span style={{ display: "flex", gap: 2 }}>
+        <span style={{ display: "flex", gap: 2, alignItems: "center" }}>
+          <select
+            value={tf}
+            onChange={(e) => setTf(e.target.value as Tf)}
+            aria-label="Bar timeframe"
+            title="Bar resolution — AUTO follows the range preset"
+            style={{
+              background: "var(--surface)",
+              border: "1px solid var(--line)",
+              color: tf === "auto" ? "var(--ink-faint)" : "var(--accent)",
+              fontFamily: "var(--font-mono)",
+              fontSize: 10,
+              letterSpacing: "0.08em",
+              padding: "2px 4px",
+              marginRight: 8,
+              cursor: "pointer",
+            }}
+          >
+            {TIMEFRAMES.map((t) => (
+              <option key={t.id} value={t.id}>
+                TF·{t.label}
+              </option>
+            ))}
+          </select>
           {RANGES.map((r) => (
             <button
               key={r}
