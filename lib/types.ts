@@ -44,6 +44,7 @@ export interface Order {
   type: string;
   status: string;
   limit_price: string | null;
+  stop_price: string | null;
   filled_avg_price: string | null;
   submitted_at: string;
 }

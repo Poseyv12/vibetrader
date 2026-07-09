@@ -44,6 +44,8 @@ export const trading = {
   get: <T>(path: string) => request<T>(TRADING_BASE, path),
   post: <T>(path: string, body: unknown) =>
     request<T>(TRADING_BASE, path, { method: "POST", body: JSON.stringify(body) }),
+  patch: <T>(path: string, body: unknown) =>
+    request<T>(TRADING_BASE, path, { method: "PATCH", body: JSON.stringify(body) }),
   del: <T>(path: string) => request<T>(TRADING_BASE, path, { method: "DELETE" }),
 };
 
