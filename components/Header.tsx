@@ -8,6 +8,22 @@ import { Clock } from "@/lib/types";
 export function Header() {
   const { data: clock } = usePoll<Clock>("/api/clock", 60_000);
   const [now, setNow] = useState<string>("");
+  const [fullscreen, setFullscreen] = useState(false);
+
+  // track state from the browser, not our own toggle — Esc also exits
+  useEffect(() => {
+    const onChange = () => setFullscreen(document.fullscreenElement != null);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    } else {
+      document.documentElement.requestFullscreen().catch(() => {});
+    }
+  };
 
   useEffect(() => {
     const tick = () =>
@@ -78,6 +94,22 @@ export function Header() {
       >
         ⚙
       </Link>
+      <button
+        onClick={toggleFullscreen}
+        aria-label={fullscreen ? "Exit full screen" : "Enter full screen"}
+        title={fullscreen ? "exit full screen (esc)" : "full screen"}
+        style={{
+          background: "transparent",
+          border: "none",
+          color: fullscreen ? "var(--accent)" : "var(--ink-faint)",
+          fontSize: 15,
+          lineHeight: 1,
+          cursor: "pointer",
+          padding: 0,
+        }}
+      >
+        ⛶
+      </button>
     </header>
   );
 }
