@@ -48,6 +48,25 @@ export interface Order {
   submitted_at: string;
 }
 
+/**
+ * An AI-suggested order draft. Drafts are NEVER transmitted by the AI — they
+ * ride the `vt:draft-order` window event into the order ticket, where the
+ * user still has to arm and confirm. The user is always the decider.
+ */
+export interface DraftOrder {
+  symbol: string;
+  side: "buy" | "sell";
+  type: "market" | "limit";
+  mode: "qty" | "notional";
+  amount: number;
+  limit_price?: number;
+  take_profit?: number;
+  stop_loss?: number;
+  rationale?: string;
+  conviction?: "low" | "medium" | "high";
+  source: "copilot" | "scout";
+}
+
 export interface NewsStory {
   id: number;
   headline: string;
