@@ -10,6 +10,11 @@ import type { LmTool } from "./llm";
  * order/position mutation tools here — the LLM cannot trade, cancel, or
  * close anything. Keep it that way until write access is an explicit,
  * separately-confirmed feature.
+ *
+ * The one draft-shaped exception is `propose_trade`: it touches nothing at
+ * Alpaca — it only describes an order, which the UI renders as a card the
+ * user can load into the order ticket and must still arm + confirm there.
+ * The user is always the decider.
  */
 
 export const CHAT_TOOLS: LmTool[] = [
@@ -157,6 +162,29 @@ export const CHAT_TOOLS: LmTool[] = [
       name: "get_alerts",
       description: "Configured price alerts and whether they have triggered",
       parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "propose_trade",
+      description:
+        "Draft an order for the user's review. Places NOTHING — the user sees a card, can load it into the order ticket, and must confirm it themselves. Use after research supports a clear idea, or when the user asks you to draft/set up a trade. Provide exactly one of qty or notional. take_profit/stop_loss attach a bracket (stocks with qty only — crypto can't bracket).",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string", description: "AAPL or crypto pair like BTC/USD" },
+          side: { type: "string", enum: ["buy", "sell"] },
+          type: { type: "string", enum: ["market", "limit"], description: "default market" },
+          qty: { type: "number", description: "share/coin quantity (use for stocks with brackets)" },
+          notional: { type: "number", description: "dollar amount instead of qty (market orders; crypto min $10)" },
+          limit_price: { type: "number", description: "required when type=limit" },
+          take_profit: { type: "number", description: "bracket TP price (stocks + qty only)" },
+          stop_loss: { type: "number", description: "bracket SL price (stocks + qty only)" },
+          rationale: { type: "string", description: "one sentence: why this trade, citing your research" },
+        },
+        required: ["symbol", "side", "rationale"],
+      },
     },
   },
   {
@@ -369,6 +397,47 @@ export async function runChatTool(name: string, args: Record<string, unknown>): 
         condition: `${a.op} ${a.price}`,
         triggered: a.triggered ? `yes, at ${a.triggered.price}` : "no",
       }));
+    case "propose_trade": {
+      // touches nothing at Alpaca — the UI turns the tool call into a draft
+      // card; this handler just validates and tells the model what happened
+      const symbol = String(args.symbol ?? "").toUpperCase().trim();
+      if (!/^[A-Z0-9./]{1,12}$/.test(symbol)) throw new Error("valid symbol required");
+      const crypto = isCryptoSymbol(symbol);
+      const side = args.side === "sell" ? "sell" : "buy";
+      const qty = Number(args.qty) || 0;
+      const notional = Number(args.notional) || 0;
+      if (qty <= 0 && notional <= 0) throw new Error("provide qty or notional > 0");
+      const limit = Number(args.limit_price) || 0;
+      if (args.type === "limit" && limit <= 0) throw new Error("limit_price required for a limit order");
+      const tp = Number(args.take_profit) || 0;
+      const sl = Number(args.stop_loss) || 0;
+      const bracket = !crypto && qty > 0 && tp > 0 && sl > 0 && (side === "buy" ? tp > sl : tp < sl);
+      const dropped: string[] = [];
+      if ((tp > 0 || sl > 0) && !bracket) {
+        dropped.push(
+          crypto
+            ? "bracket legs dropped — crypto orders can't carry TP/SL"
+            : qty <= 0
+              ? "bracket legs dropped — brackets need share qty, not notional"
+              : "bracket legs dropped — TP/SL levels were missing or inverted"
+        );
+      }
+      if (crypto && notional > 0 && notional < 10) dropped.push("warning: crypto orders have a $10 minimum");
+      return {
+        ok: true,
+        shown_to_user: {
+          symbol,
+          side,
+          type: args.type === "limit" && limit > 0 ? "limit" : "market",
+          ...(qty > 0 ? { qty } : { notional }),
+          ...(limit > 0 ? { limit_price: limit } : {}),
+          ...(bracket ? { take_profit: tp, stop_loss: sl } : {}),
+        },
+        note:
+          "Draft card shown to the user. NOTHING was placed — the user decides whether to load it into the ticket and confirm. Do not imply an order exists." +
+          (dropped.length ? ` (${dropped.join("; ")})` : ""),
+      };
+    }
     case "get_performance": {
       const perf = await computePerformance();
       return {

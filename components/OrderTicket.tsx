@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePoll } from "@/hooks/usePoll";
 import { useStream } from "@/hooks/useStream";
-import { Account, Snapshot, snapPrice, fmtUsd } from "@/lib/types";
+import { Account, DraftOrder, Snapshot, snapPrice, fmtUsd } from "@/lib/types";
 import { Panel } from "./Panel";
 
 type Side = "buy" | "sell";
@@ -35,6 +35,8 @@ export function OrderTicket({ symbol }: { symbol: string }) {
   const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  /** symbol of an AI draft currently loaded — informational only, never auto-arms */
+  const [draftFrom, setDraftFrom] = useState<string | null>(null);
 
   const { data: snap } = usePoll<Record<string, Snapshot>>(
     `/api/snapshots?symbols=${encodeURIComponent(symbol)}`,
@@ -64,6 +66,43 @@ export function OrderTicket({ symbol }: { symbol: string }) {
   useEffect(() => {
     if (isCrypto) setBracket(false);
   }, [isCrypto]);
+
+  // AI drafts (copilot propose_trade / scout picks) pre-fill the ticket via
+  // vt:draft-order. Fill only — the ticket stays disarmed; the user reviews,
+  // arms, and confirms exactly like a hand-typed order.
+  useEffect(() => {
+    const onDraft = (e: Event) => {
+      const d = (e as CustomEvent<DraftOrder>).detail;
+      if (!d?.symbol || !(Number(d.amount) > 0)) return;
+      const crypto = d.symbol.includes("/");
+      setSide(d.side === "sell" ? "sell" : "buy");
+      const lmt = Number(d.limit_price) || 0;
+      setType(d.type === "limit" && lmt > 0 ? "limit" : "market");
+      setLimitPrice(lmt > 0 ? String(lmt) : "");
+      setStopPrice("");
+      setTrailPct("");
+      const withBracket =
+        !crypto && d.mode === "qty" && Number(d.take_profit) > 0 && Number(d.stop_loss) > 0;
+      setBracket(withBracket);
+      setTakeProfit(withBracket ? String(d.take_profit) : "");
+      setStopLoss(withBracket ? String(d.stop_loss) : "");
+      setMode(d.mode === "notional" && !withBracket ? "notional" : "qty");
+      setAmount(String(d.amount));
+      setArmed(false);
+      setMsg(null);
+      setDraftFrom(d.symbol);
+    };
+    window.addEventListener("vt:draft-order", onDraft);
+    return () => window.removeEventListener("vt:draft-order", onDraft);
+  }, []);
+
+  // the draft note only makes sense while the ticket still shows that symbol
+  // (render-time adjustment, not an effect — avoids a cascading render)
+  const [symbolSeen, setSymbolSeen] = useState(symbol);
+  if (symbolSeen !== symbol) {
+    setSymbolSeen(symbol);
+    if (draftFrom && draftFrom !== symbol) setDraftFrom(null);
+  }
 
   // crypto only supports market/limit/stop-limit; stops need share qty and
   // can't carry bracket legs
@@ -127,6 +166,7 @@ export function OrderTicket({ symbol }: { symbol: string }) {
         text: `${side.toUpperCase()} ${symbol} submitted — ${body.status}`,
       });
       setAmount("");
+      setDraftFrom(null);
       window.dispatchEvent(new Event("vt:refresh"));
     } catch (e) {
       const text = e instanceof Error ? e.message : String(e);
@@ -383,6 +423,12 @@ export function OrderTicket({ symbol }: { symbol: string }) {
         {side === "sell" && !isCrypto && account?.shorting_enabled && (
           <div className="label" style={{ color: "var(--ink-faint)" }}>
             selling more than you hold opens a short (margin, whole shares)
+          </div>
+        )}
+
+        {draftFrom === symbol && (
+          <div className="label" style={{ color: "var(--amber)" }}>
+            ⚑ ai draft loaded — you decide: review, then arm &amp; confirm
           </div>
         )}
 

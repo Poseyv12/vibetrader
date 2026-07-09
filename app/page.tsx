@@ -97,6 +97,17 @@ export default function Home() {
     if (hydrated) localStorage.setItem(SYMBOL_KEY, symbol);
   }, [symbol, hydrated]);
 
+  // loading an AI draft into the ticket also selects its symbol, so the
+  // ticket (and chart) show what the user is about to review
+  useEffect(() => {
+    const onDraft = (e: Event) => {
+      const s = (e as CustomEvent<{ symbol?: string }>).detail?.symbol;
+      if (s && /^[A-Z0-9./]{1,12}$/.test(s)) setSymbol(s);
+    };
+    window.addEventListener("vt:draft-order", onDraft);
+    return () => window.removeEventListener("vt:draft-order", onDraft);
+  }, []);
+
   // watchdog stories that arrive while the news tab is hidden get a dot
   useEffect(() => {
     if (mainTab === "news") return;
@@ -297,7 +308,7 @@ export default function Home() {
             />
           </div>
           <div className="reveal" style={{ animationDelay: "320ms", display: "flex", flexDirection: "column" }}>
-            <ChatPanel symbol={symbol} />
+            <ChatPanel symbol={symbol} watchlist={watchlist} />
           </div>
         </div>
       </main>
