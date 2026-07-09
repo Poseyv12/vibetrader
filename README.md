@@ -16,10 +16,12 @@ A dark, CRT-flavored **AI-assisted paper-trading terminal** for [Alpaca](https:/
 
 VIBETRADER combines a trading dashboard, market-data terminal, and AI research workflow:
 
-- Stream Alpaca paper account, quote, candle, order, and position data
+- Stream Alpaca paper account, quote, candle, order, and position data in real time
 - Watch stocks and crypto in one interface
 - Place paper market, limit, stop, stop-limit, trailing-stop, and bracket orders with safety confirmations
-- Research symbols with an LLM copilot using read-only tools
+- Manage working orders directly on the chart — drag lines to stage exits or re-price
+- Research symbols with an LLM copilot using read-only tools, from a command line in the header
+- Draft trades with AI — a watchlist scout and copilot proposals load the ticket, you always confirm
 - Generate daily briefings and AI trade reviews from deterministic market/trade data
 - Trigger alert-based research when watched prices move
 - Triage live news for watched symbols
@@ -30,22 +32,25 @@ VIBETRADER combines a trading dashboard, market-data terminal, and AI research w
 
 ### Trading terminal
 
-- Live streaming quotes, candles, and order fills through a server-side websocket relay → SSE
-- Candlestick chart with SMA 20/50/200 overlays, volume, and multiple timeframes
+- Real-time prices through a server-side websocket relay → SSE: trades, bid/ask mid-quotes, and candles move the chart, ticker tape, and position P&L live between polls
+- Candlestick chart with SMA 20/50/200 overlays, volume, 1D–5Y ranges, and a bar-resolution picker (1m to 1W, with per-range AUTO presets) plus a next-bar countdown
 - Chart stats strip: day O/H/L, volume, RSI14, distance vs SMA20/50, 5D/20D change, 30-day realized vol, 52-week range
 - Drawing tools: trendlines, rays, horizontal lines, and Fibonacci retracements
-- Position entry and alert levels overlaid on the chart, with journaled fills plotted as arrows
+- Manage orders on the chart: drag from the entry line to stage a take-profit or stop-loss, drag a working order line to re-price it, click a line to close the position or cancel the order — nothing transmits until you confirm
+- Position entry, working orders, and alert levels overlaid on the chart, with journaled fills plotted as arrows
 - Click-anywhere price alerts with desktop notifications and sound
 - Market, limit, stop, stop-limit, trailing-stop, and bracket orders
 - Margin-aware trading: leverage, intraday vs overnight buying power, cash-only asset handling
 - One-click position close with arm/confirm safety
 - Stocks + crypto watchlist and ticker tape
-- Wide-screen cockpit layout with a panel-visibility rail; selected symbol persists across reloads
+- Wide-screen cockpit layout with a panel-visibility rail and fullscreen toggle; selected symbol persists across reloads
 
 ### AI layer — local first, frontier optional
 
 - Research copilot: LM Studio's local server by default, switchable to OpenAI or Anthropic on the settings page
+- Header command line — ask the copilot anything from anywhere in the terminal
 - Read-only tools for account, positions, orders, quotes, technicals, news, screeners, and performance stats
+- AI trade drafting: a scout scans the watchlist for setups and the copilot can propose trades — drafts load the order ticket, and you always arm + confirm before anything transmits
 - Daily briefing generator: deterministic data gathering, LLM synthesis only
 - AI trade review: server-computed FIFO stats plus fill-time market snapshots, synthesized into a scorecard and habit critique
 - Alert-triggered auto-research: alert fires → agent researches why → note lands in journal
@@ -67,7 +72,7 @@ VIBETRADER combines a trading dashboard, market-data terminal, and AI research w
 VIBETRADER is intentionally conservative about AI authority:
 
 - Alpaca and AI-provider keys stay server-side and are never sent to the browser.
-- The LLM research tools are read-only.
+- The LLM research tools are read-only. The one exception is draft-shaped: `propose_trade` and the scout only stage a draft in the order ticket — the user must still arm and confirm before anything transmits.
 - Broad tasks gather data deterministically first; the model synthesizes, it does not invent prices or indicators.
 - Technical indicators are computed server-side in code, not by the model.
 - Real-money trading is not the target use case.
