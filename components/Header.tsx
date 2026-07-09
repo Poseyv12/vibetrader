@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePoll } from "@/hooks/usePoll";
 import { Clock } from "@/lib/types";
@@ -9,6 +9,28 @@ export function Header() {
   const { data: clock } = usePoll<Clock>("/api/clock", 60_000);
   const [now, setNow] = useState<string>("");
   const [fullscreen, setFullscreen] = useState(false);
+  const [ask, setAsk] = useState("");
+  const askRef = useRef<HTMLInputElement>(null);
+
+  // "/" focuses the copilot command line from anywhere (unless already typing)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "/") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      e.preventDefault();
+      askRef.current?.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const submitAsk = () => {
+    const q = ask.trim();
+    if (!q) return;
+    window.dispatchEvent(new CustomEvent("vt:ask", { detail: { q } }));
+    setAsk("");
+  };
 
   // track state from the browser, not our own toggle — Esc also exits
   useEffect(() => {
@@ -66,9 +88,53 @@ export function Header() {
         <span className="cursor-blink">_</span>
       </h1>
       <span className="label" style={{ paddingTop: 2 }}>
-        alpaca paper terminal
+        v1.2
       </span>
-      <span style={{ flex: 1 }} />
+      {/* the copilot command line — the AI is the app's front door */}
+      <span
+        style={{
+          flex: 1,
+          display: "flex",
+          justifyContent: "center",
+          minWidth: 0,
+        }}
+      >
+        <span
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            width: "100%",
+            maxWidth: 460,
+            background: "var(--surface)",
+            border: "1px solid var(--line)",
+            padding: "4px 10px",
+          }}
+        >
+          <span style={{ color: "var(--accent)", fontSize: 12 }} aria-hidden>
+            ◈{">"}
+          </span>
+          <input
+            ref={askRef}
+            value={ask}
+            onChange={(e) => setAsk(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && submitAsk()}
+            placeholder="ASK THE COPILOT — RESEARCH, BRIEFING, DRAFT A TRADE_"
+            aria-label="Ask the copilot"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              background: "transparent",
+              border: "none",
+              outline: "none",
+              color: "var(--ink)",
+              fontFamily: "var(--font-mono)",
+              fontSize: 12,
+            }}
+          />
+          <span className="label" title="press / to focus">/</span>
+        </span>
+      </span>
       <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 11 }}>
         <span className={`led ${clock?.is_open ? "led-open" : "led-closed"}`} aria-hidden />
         <span style={{ color: clock?.is_open ? "var(--up)" : "var(--amber)", letterSpacing: "0.12em" }}>

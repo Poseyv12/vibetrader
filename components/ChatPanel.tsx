@@ -108,6 +108,7 @@ export function ChatPanel({ symbol, watchlist = [] }: { symbol: string; watchlis
   const [status, setStatus] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -197,6 +198,30 @@ export function ChatPanel({ symbol, watchlist = [] }: { symbol: string; watchlis
     }
   };
 
+  // questions from the header command line land here
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  useEffect(() => {
+    const onAsk = (e: Event) => {
+      const q = (e as CustomEvent<{ q?: string }>).detail?.q?.trim();
+      if (!q) return;
+      setCollapsed(false);
+      rootRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      if (busyRef.current) {
+        setLines((ls) => [
+          ...ls,
+          { kind: "note", text: `▸ still answering — ask again in a moment: "${q}"` },
+        ]);
+        return;
+      }
+      sendRef.current(q);
+    };
+    window.addEventListener("vt:ask", onAsk);
+    return () => window.removeEventListener("vt:ask", onAsk);
+  }, []);
+
   // scout: server gathers screeners/technicals/headlines deterministically,
   // one synthesis-only model call picks setups. Picks arrive as drafts —
   // suggestions only; every trade still goes through the ticket's confirm.
@@ -232,12 +257,16 @@ export function ChatPanel({ symbol, watchlist = [] }: { symbol: string; watchlis
   };
 
   return (
+    <div
+      ref={rootRef}
+      style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}
+    >
     <Panel
       title="Copilot"
       right={
         <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span className="label" style={{ color: "var(--amber)" }} title="the AI can research and draft — only you can place a trade">
-            drafts only · you confirm
+            
           </span>
           <button
             className="btn btn-ghost"
@@ -358,5 +387,6 @@ export function ChatPanel({ symbol, watchlist = [] }: { symbol: string; watchlis
         </>
       )}
     </Panel>
+    </div>
   );
 }

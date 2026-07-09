@@ -89,6 +89,13 @@ export default function Home() {
     if (hydrated) localStorage.setItem(PANELS_KEY, JSON.stringify(panels));
   }, [panels, hydrated]);
 
+  // a command-line question reveals the copilot if its region is hidden
+  useEffect(() => {
+    const onAsk = () => setPanels((p) => (p.watch ? p : { ...p, watch: true }));
+    window.addEventListener("vt:ask", onAsk);
+    return () => window.removeEventListener("vt:ask", onAsk);
+  }, []);
+
   useEffect(() => {
     if (hydrated) localStorage.setItem(TAB_KEY, mainTab);
   }, [mainTab, hydrated]);
@@ -318,7 +325,7 @@ export default function Home() {
         className="label"
         style={{ padding: "8px 14px", display: "flex", gap: 12, borderTop: "1px solid var(--line)" }}
       >
-        <span>PAPER ACCOUNT — NOT REAL MONEY</span>
+        <span>PAPER ACCOUNT</span>
         <span style={{ flex: 1 }} />
         <span
           style={{
