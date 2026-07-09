@@ -169,7 +169,8 @@ export function EquityChart() {
           <b style={{ color: "var(--ink)" }}>{fmt(shown.spy)}</b>
         </span>
       </div>
-      <div style={{ position: "relative", height: 260 }}>
+      {/* flex-fills the wrapper so panel rows can share one fixed height */}
+      <div style={{ position: "relative", flex: 1, minHeight: 200 }}>
         <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
       </div>
     </Panel>
