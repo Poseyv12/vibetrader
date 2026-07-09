@@ -1,10 +1,8 @@
 # VIBETRADER
 
-A dark, CRT-flavored **AI-assisted paper-trading terminal** for [Alpaca](https://alpaca.markets), with a local-LLM research copilot powered by [LM Studio](https://lmstudio.ai).
+A dark, CRT-flavored **AI-assisted paper-trading terminal** for [Alpaca](https://alpaca.markets), with an AI research copilot — local via [LM Studio](https://lmstudio.ai) by default, switchable to OpenAI or Anthropic frontier models.
 
-![VIBETRADER dashboard screenshot](public/vibetrader-dashboard.jpg)
-
-![VIBETRADER wide trading terminal screenshot](public/vibetrader-terminal-wide.jpg)
+![VIBETRADER cockpit terminal screenshot](public/vibetrader-updated-screenshot.png)
 
 ### Colorway examples
 
@@ -12,18 +10,19 @@ A dark, CRT-flavored **AI-assisted paper-trading terminal** for [Alpaca](https:/
 
 ![VIBETRADER SPY amber and green colorway](public/vibetrader-colorway-spy-amber-green.jpg)
 
-> **Paper trading only.** VIBETRADER is for learning, research workflows, and local experimentation. It is not financial advice, not a signal service, and not built for unattended real-money trading.
+> **Paper trading only.** VIBETRADER is for learning, research workflows, and local experimentation. It is not financial advice, not a signal service, and not built for unattended real-money trading... Yet.
 
 ## What it does
 
-VIBETRADER combines a trading dashboard, market-data terminal, and local AI research workflow:
+VIBETRADER combines a trading dashboard, market-data terminal, and AI research workflow:
 
 - Stream Alpaca paper account, quote, candle, order, and position data
 - Watch stocks and crypto in one interface
-- Place paper market, limit, and bracket orders with safety confirmations
-- Research symbols with a local LLM copilot using read-only tools
-- Generate daily briefings from deterministic market/news data
+- Place paper market, limit, stop, stop-limit, trailing-stop, and bracket orders with safety confirmations
+- Research symbols with an LLM copilot using read-only tools
+- Generate daily briefings and AI trade reviews from deterministic market/trade data
 - Trigger alert-based research when watched prices move
+- Triage live news for watched symbols
 - Keep local research and trade journals
 - Review performance, equity curve, win rate, and trade history
 
@@ -32,36 +31,42 @@ VIBETRADER combines a trading dashboard, market-data terminal, and local AI rese
 ### Trading terminal
 
 - Live streaming quotes, candles, and order fills through a server-side websocket relay → SSE
-- Candlestick chart with SMA 20/50/200 overlays and volume
+- Candlestick chart with SMA 20/50/200 overlays, volume, and multiple timeframes
+- Chart stats strip: day O/H/L, volume, RSI14, distance vs SMA20/50, 5D/20D change, 30-day realized vol, 52-week range
+- Drawing tools: trendlines, rays, horizontal lines, and Fibonacci retracements
+- Position entry and alert levels overlaid on the chart, with journaled fills plotted as arrows
 - Click-anywhere price alerts with desktop notifications and sound
-- Market, limit, and bracket orders
+- Market, limit, stop, stop-limit, trailing-stop, and bracket orders
+- Margin-aware trading: leverage, intraday vs overnight buying power, cash-only asset handling
 - One-click position close with arm/confirm safety
 - Stocks + crypto watchlist and ticker tape
+- Wide-screen cockpit layout with a panel-visibility rail; selected symbol persists across reloads
 
-### AI layer — local first
+### AI layer — local first, frontier optional
 
-- Research copilot powered by LM Studio's OpenAI-compatible local server
-- Read-only tools for account, positions, orders, quotes, technicals, news, and screeners
+- Research copilot: LM Studio's local server by default, switchable to OpenAI or Anthropic on the settings page
+- Read-only tools for account, positions, orders, quotes, technicals, news, screeners, and performance stats
 - Daily briefing generator: deterministic data gathering, LLM synthesis only
+- AI trade review: server-computed FIFO stats plus fill-time market snapshots, synthesized into a scorecard and habit critique
 - Alert-triggered auto-research: alert fires → agent researches why → note lands in journal
 - News watchdog that triages stories touching watched symbols
 - Research journal with local semantic search
-- Trade journal capturing market-context snapshots at fill time
+- Trade journal capturing market-context snapshots (RSI, SMA distance, 5-day change) at fill time
 
 ### Dashboards
 
-- Account overview
+- Account overview with leverage and buying-power readout
 - Positions and orders
 - Watchlist and alerts
-- Research panel
-- Performance page: equity vs SPY, FIFO round-trip stats, win rate, per-symbol P/L, trade log
-- Settings page for API keys, model selection, watchdog settings, and UI theme customization
+- Research panel and tabbed news panel with a live triage stream
+- Performance page: equity vs SPY, FIFO round-trip stats, win rate, per-symbol P/L, trade log, and one-click AI review
+- Settings page for API keys, AI provider and model selection, watchdog settings, and UI theme customization
 
 ## Safety model
 
 VIBETRADER is intentionally conservative about AI authority:
 
-- Alpaca keys stay server-side and are never sent to the browser.
+- Alpaca and AI-provider keys stay server-side and are never sent to the browser.
 - The LLM research tools are read-only.
 - Broad tasks gather data deterministically first; the model synthesizes, it does not invent prices or indicators.
 - Technical indicators are computed server-side in code, not by the model.
@@ -94,9 +99,9 @@ ALPACA_SECRET_KEY=...
 
 Get free paper keys from the [Alpaca paper dashboard](https://app.alpaca.markets).
 
-### 3. Optional: start LM Studio
+### 3. Optional: pick an AI provider
 
-Install [LM Studio](https://lmstudio.ai), then load:
+**LM Studio (default, local).** Install [LM Studio](https://lmstudio.ai), then load:
 
 - a tool-capable chat model, such as Qwen3-4B or similar
 - `nomic-embed-text` for local journal search
@@ -111,7 +116,12 @@ LMSTUDIO_MODEL=qwen/qwen3-4b-2507
 LMSTUDIO_EMBED_MODEL=text-embedding-nomic-embed-text-v1.5
 ```
 
-The app still runs without LM Studio; AI features will tell you to start the server.
+**OpenAI or Anthropic (frontier models).** Switch the provider and add an API
+key on the `/settings` page (or set `LLM_PROVIDER`, `OPENAI_API_KEY` /
+`ANTHROPIC_API_KEY` in `.env.local`). Journal embeddings always use LM Studio
+locally, regardless of chat provider.
+
+The app still runs without any AI provider; AI features will tell you what to configure.
 
 ### 4. Run locally
 
@@ -155,14 +165,20 @@ ALPACA_SECRET_KEY=...
 LMSTUDIO_URL=http://localhost:1234/v1
 LMSTUDIO_MODEL=qwen/qwen3-4b-2507
 LMSTUDIO_EMBED_MODEL=text-embedding-nomic-embed-text-v1.5
+LLM_PROVIDER=lmstudio        # lmstudio | openai | anthropic
+OPENAI_API_KEY=...           # only if LLM_PROVIDER=openai
+ANTHROPIC_API_KEY=...        # only if LLM_PROVIDER=anthropic
 ```
+
+All of these, including the Alpaca keys, can also be configured on the `/settings` page.
 
 ## Notes
 
 - Free-tier Alpaca market data uses the IEX feed.
 - Alpaca crypto streams 24/7.
 - Alpaca enforces a $10 minimum on crypto orders and takes crypto fees in the base asset.
-- Bracket orders are equities-only.
+- Bracket orders are equities-only; crypto and fractional/notional orders are cash-only (non-marginable).
+- Margin is account-level: intraday buying power is up to 4× (equity ≥ $25k), overnight holds must fit 2×.
 - Runtime state lives in `data/` and is gitignored.
 - Small local models are useful for grounded synthesis, but weak at math. Indicators are computed in code.
 
@@ -194,7 +210,7 @@ Never commit `.env.local`, API keys, or runtime `data/` files. See [SECURITY.md]
 
 ## Stack
 
-Next.js App Router · TypeScript · lightweight-charts · Alpaca REST + websockets · LM Studio/OpenAI-compatible local APIs · SSE relay
+Next.js App Router · TypeScript · lightweight-charts · Alpaca REST + websockets · LM Studio / OpenAI / Anthropic AI providers · SSE relay
 
 ## License
 
