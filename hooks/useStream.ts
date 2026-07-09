@@ -18,9 +18,10 @@ export const StreamCtx = createContext<StreamState>({ prices: {}, connected: fal
 export const useStream = () => useContext(StreamCtx);
 
 /**
- * Opens the SSE relay for the given symbols. Trades/bars update a throttled
- * price map (400ms flush — BTC can tick many times a second); trade_update
- * events fire vt:refresh so account/positions/orders repoll instantly.
+ * Opens the SSE relay for the given symbols. Trades, quotes (mid), and bars
+ * update a throttled price map (400ms flush — BTC can tick many times a
+ * second); trade_update events fire vt:refresh so account/positions/orders
+ * repoll instantly.
  * EventSource auto-reconnects; polling elsewhere is the fallback.
  */
 export function useStreamSource(symbols: string[]): StreamState {
@@ -43,6 +44,10 @@ export function useStreamSource(symbols: string[]): StreamState {
           dirty.current = true;
         } else if (m.T === "b" && m.S) {
           buffer.current[m.S] = { p: m.c, t: Date.parse(m.t) };
+          dirty.current = true;
+        } else if (m.T === "q" && m.S && m.bp > 0 && m.ap > 0) {
+          // mid-quote keeps the price moving between sparse trade prints
+          buffer.current[m.S] = { p: (m.bp + m.ap) / 2, t: Date.parse(m.t) };
           dirty.current = true;
         } else if (m.T === "trade_update") {
           window.dispatchEvent(new CustomEvent("vt:trade", { detail: m }));

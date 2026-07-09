@@ -2,11 +2,15 @@
 
 import { useState } from "react";
 import { usePoll } from "@/hooks/usePoll";
+import { useStream } from "@/hooks/useStream";
 import { Position, displaySymbol, fmtUsd, fmtNum, fmtPct } from "@/lib/types";
 import { Panel } from "./Panel";
 
 export function PositionsTable({ onSelect }: { onSelect: (s: string) => void }) {
   const { data: positions, refresh } = usePoll<Position[]>("/api/positions", 10_000);
+  // display prices ride the live stream so rows agree with the chart/tape;
+  // Alpaca's 10s-polled figures remain the official record underneath
+  const { prices: live } = useStream();
   const [armed, setArmed] = useState<string | null>(null);
   const [closing, setClosing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -73,9 +77,15 @@ export function PositionsTable({ onSelect }: { onSelect: (s: string) => void }) 
             </thead>
             <tbody>
               {positions.map((p) => {
-                const pl = parseFloat(p.unrealized_pl);
-                const up = pl >= 0;
                 const sym = displaySymbol(p);
+                const qty = parseFloat(p.qty);
+                const entry = parseFloat(p.avg_entry_price);
+                // live tick wins for display; poll value is the fallback
+                const px = live[sym]?.p ?? parseFloat(p.current_price);
+                const pl = (px - entry) * qty;
+                const cost = Math.abs(parseFloat(p.cost_basis));
+                const plpc = cost > 0 ? pl / cost : parseFloat(p.unrealized_plpc);
+                const up = pl >= 0;
                 const isArmed = armed === p.symbol;
                 return (
                   <tr key={p.symbol} onClick={() => onSelect(sym)} style={{ cursor: "pointer" }}>
@@ -88,14 +98,14 @@ export function PositionsTable({ onSelect }: { onSelect: (s: string) => void }) 
                       )}
                     </td>
                     <td>{fmtNum(p.qty, p.asset_class === "crypto" ? 6 : 0)}</td>
-                    <td>{fmtNum(p.avg_entry_price)}</td>
-                    <td>{fmtNum(p.current_price)}</td>
-                    <td>{fmtUsd(p.market_value)}</td>
+                    <td>{fmtNum(entry)}</td>
+                    <td>{fmtNum(px)}</td>
+                    <td>{fmtUsd(px * qty)}</td>
                     <td className={up ? "num-up" : "num-down"}>
                       {up ? "+" : ""}
                       {fmtUsd(pl)}
                     </td>
-                    <td className={up ? "num-up" : "num-down"}>{fmtPct(p.unrealized_plpc)}</td>
+                    <td className={up ? "num-up" : "num-down"}>{fmtPct(plpc)}</td>
                     <td>
                       <button
                         className="btn btn-ghost"

@@ -3,7 +3,7 @@ import { isCryptoSymbol } from "./alpaca";
 import { checkAlerts, alertSymbols, Alert } from "./alerts";
 import { autoResearch } from "./auto-research";
 import { queueNewsTriage, NewsItem } from "./news-watchdog";
-import { getSettings } from "./settings";
+import { getSettings, resolved } from "./settings";
 
 /**
  * Server-side streaming hub. Holds ONE upstream websocket per Alpaca stream
@@ -20,17 +20,23 @@ const NEWS_URL = "wss://stream.data.alpaca.markets/v1beta1/news";
 type Controller = ReadableStreamDefaultController<Uint8Array>;
 const enc = new TextEncoder();
 
+// settings-first like every REST client — env-only here once left the hub
+// authing with stale .env.local keys while the rest of the app worked
 function creds() {
   return {
-    key: process.env.ALPACA_API_KEY ?? "",
-    secret: process.env.ALPACA_SECRET_KEY ?? "",
+    key: resolved.alpacaKey(),
+    secret: resolved.alpacaSecret(),
   };
 }
+
+/** Min gap between forwarded quotes per symbol — quotes can arrive many times a second. */
+const QUOTE_THROTTLE_MS = 250;
 
 class Upstream {
   ws: WebSocket | null = null;
   subs = new Set<string>();
   authed = false;
+  private lastQuoteAt = new Map<string, number>();
 
   constructor(
     private url: string,
@@ -145,6 +151,18 @@ class Upstream {
         }
       } else if (item.T === "n") {
         this.hub.handleNews(item as unknown as NewsItem);
+      } else if (item.T === "q") {
+        // quotes move the price between trades (trades alone are sparse —
+        // IEX prints / Alpaca's crypto venue). Throttled per symbol; alerts
+        // still fire on trades/bars only so spread noise can't trip them.
+        const sym = item.S as string;
+        const now = Date.now();
+        if (now - (this.lastQuoteAt.get(sym) ?? 0) >= QUOTE_THROTTLE_MS) {
+          this.lastQuoteAt.set(sym, now);
+          this.hub.broadcast(
+            JSON.stringify({ T: "q", S: sym, bp: item.bp, ap: item.ap, t: item.t })
+          );
+        }
       } else if (item.T === "t" || item.T === "b") {
         this.hub.broadcast(JSON.stringify(item));
         const sym = item.S as string;
@@ -175,7 +193,7 @@ class Upstream {
     this.ensure();
     if (fresh.length && this.authed && this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(
-        JSON.stringify({ action: "subscribe", trades: fresh, bars: fresh })
+        JSON.stringify({ action: "subscribe", trades: fresh, bars: fresh, quotes: fresh })
       );
     }
   }
@@ -183,7 +201,9 @@ class Upstream {
   private resubscribe() {
     if (this.subs.size && this.ws?.readyState === WebSocket.OPEN) {
       const all = [...this.subs];
-      this.ws.send(JSON.stringify({ action: "subscribe", trades: all, bars: all }));
+      this.ws.send(
+        JSON.stringify({ action: "subscribe", trades: all, bars: all, quotes: all })
+      );
     }
   }
 }
