@@ -629,6 +629,12 @@ body {
   min-width: 0;
 }
 
+/* performance dashboard: fixed-height cells whose panel fills them */
+.perf-cell > .panel {
+  flex: 1;
+  min-height: 0;
+}
+
 /* ── wide monitors: cockpit layout, pinned to the viewport ──
    research/news (full-height, left) | chart with positions/orders
    below | account/ticket/alerts | watchlist/chat. Everything fits
