@@ -327,6 +327,9 @@ export function CandleChart({ symbol }: { symbol: string }) {
     sma200: false,
   });
   const [showFills, setShowFills] = useState(true);
+  // why the FILLS toggle shows nothing, when that's not obvious from the chart
+  const [fillsHint, setFillsHint] = useState<string | null>(null);
+  const prevShowFillsRef = useRef(true);
   const [pendingAlert, setPendingAlert] = useState<{ price: number; x: number; y: number } | null>(
     null
   );
@@ -967,16 +970,22 @@ export function CandleChart({ symbol }: { symbol: string }) {
   useEffect(() => {
     const plugin = markersRef.current;
     if (!plugin) return;
+    const justEnabled = showFills && !prevShowFillsRef.current;
+    prevShowFillsRef.current = showFills;
     const times = barsRef.current.map((b) => Math.floor(Date.parse(b.t) / 1000));
     const slashless = symbol.replace("/", "");
-    if (!showFills || !trades?.length || !times.length) {
+    const fills = (trades ?? []).filter(
+      (t) => t.symbol === symbol || t.symbol === slashless
+    );
+    if (!showFills || !fills.length || !times.length) {
       plugin.setMarkers([]);
+      setFillsHint(null);
       return;
     }
     const { up, down } = themeColors();
     const markers: SeriesMarker<Time>[] = [];
-    for (const t of trades) {
-      if (t.symbol !== symbol && t.symbol !== slashless) continue;
+    let newestIdx = -1;
+    for (const t of fills) {
       const ts = Math.floor(t.ts / 1000);
       if (ts < times[0]) continue; // fill predates the loaded range
       // snap to the bar containing the fill (last bar time <= fill time)
@@ -992,6 +1001,7 @@ export function CandleChart({ symbol }: { symbol: string }) {
           hi = mid - 1;
         }
       }
+      newestIdx = Math.max(newestIdx, idx);
       const buy = t.side === "buy";
       markers.push({
         time: times[idx] as Time,
@@ -1003,6 +1013,26 @@ export function CandleChart({ symbol }: { symbol: string }) {
       });
     }
     plugin.setMarkers(markers.sort((a, b) => (a.time as number) - (b.time as number)));
+    // every fill predates the loaded bars — silence here reads as a broken button
+    setFillsHint(
+      markers.length
+        ? null
+        : `${fills.length} fill${fills.length > 1 ? "s" : ""} before this range — try a longer range`
+    );
+    // toggling fills ON brings the newest fill into view — on fine timeframes
+    // the chart can't fit every bar (min bar spacing), so old fills render
+    // off-screen to the left and the toggle looks like a no-op
+    if (justEnabled && newestIdx >= 0 && chartRef.current) {
+      const scale = chartRef.current.timeScale();
+      const lr = scale.getVisibleLogicalRange();
+      if (lr && (newestIdx < lr.from || newestIdx > lr.to)) {
+        const span = lr.to - lr.from;
+        scale.setVisibleLogicalRange({
+          from: newestIdx - span * 0.7,
+          to: newestIdx + span * 0.3,
+        });
+      }
+    }
   }, [trades, symbol, range, showFills, barsTick, themeTick]);
 
   // Escape backs out of drawing / closes the tool menu
@@ -1401,6 +1431,11 @@ export function CandleChart({ symbol }: { symbol: string }) {
               : draft
                 ? "click the second point — esc cancels"
                 : "click the first point · click a drawing to remove it"}
+          </span>
+        )}
+        {showFills && fillsHint && (
+          <span className="label" style={{ color: "var(--amber)" }}>
+            ▲▼ {fillsHint}
           </span>
         )}
         <span style={{ flex: 1 }} />
